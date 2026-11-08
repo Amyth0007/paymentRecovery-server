@@ -14,7 +14,7 @@ const app = createApp({
     accessSecret: env.JWT_ACCESS_SECRET,
     accessTtlSeconds: env.ACCESS_TTL_SECONDS,
     refreshTtlDays: env.REFRESH_TTL_DAYS,
-    cookieSecure: env.COOKIE_SECURE === "true",
+    cookieSecure: env.NODE_ENV === "production" || env.COOKIE_SECURE === "true",
     loginRateLimitMax: env.LOGIN_RATE_LIMIT_MAX,
   },
 });

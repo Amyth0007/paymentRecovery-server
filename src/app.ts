@@ -25,7 +25,6 @@ import "./types/express.js";
 
 export type AppDependencies = {
   logger: Logger;
-  clientOrigin: string;
   isDatabaseConnected: () => boolean;
   authConfig: AuthConfig;
 };
@@ -37,7 +36,7 @@ export function createApp(dependencies: AppDependencies) {
   app.use(helmet());
   app.use(
     cors({
-      origin: dependencies.clientOrigin,
+      origin: true,
       credentials: true,
       allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key", "X-Request-Id"],
       exposedHeaders: ["X-Request-Id"],

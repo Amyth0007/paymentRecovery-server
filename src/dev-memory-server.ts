@@ -21,7 +21,6 @@ logger.info({ uri }, "In-memory MongoDB replica set started");
 
 const app = createApp({
   logger,
-  clientOrigin: env.CLIENT_ORIGIN,
   isDatabaseConnected,
   authConfig: {
     accessSecret: env.JWT_ACCESS_SECRET,

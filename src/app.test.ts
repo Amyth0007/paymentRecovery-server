@@ -8,7 +8,6 @@ const logger = createLogger("silent");
 function buildApp(isDatabaseConnected: () => boolean) {
   return createApp({
     logger,
-    clientOrigin: "http://localhost:5173",
     isDatabaseConnected,
     authConfig: {
       accessSecret: "test-secret-that-is-at-least-32-characters-long",

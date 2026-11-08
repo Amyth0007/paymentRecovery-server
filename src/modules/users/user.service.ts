@@ -1,0 +1,178 @@
+import type { AuthContext, TenantRole } from "../../common/auth/auth-context.js";
+import { hashPassword } from "../../common/auth/password.js";
+import { AppError } from "../../common/errors/app-error.js";
+import { isDuplicateKey } from "../../common/utils/mongo.js";
+import type { createEmployeeSchema, updateEmployeeSchema, userListQuerySchema } from "../../common/validators/schemas.js";
+import type { z } from "zod";
+import { recordAudit, type RequestMeta } from "../audit-logs/audit.service.js";
+import { OrganizationModel } from "../organizations/organization.model.js";
+import { revokeAllRefreshTokens } from "../auth/refresh-token.service.js";
+import { UserModel } from "./user.model.js";
+
+type CreateEmployeeInput = z.infer<typeof createEmployeeSchema>;
+type UpdateEmployeeInput = z.infer<typeof updateEmployeeSchema>;
+type ListQuery = z.infer<typeof userListQuerySchema>;
+
+const userSorts = {
+  name: { name: 1 },
+  "-name": { name: -1 },
+  email: { email: 1 },
+  "-email": { email: -1 },
+  createdAt: { createdAt: 1 },
+  "-createdAt": { createdAt: -1 },
+} as const;
+
+export function presentUser(user: {
+  _id: { toString(): string };
+  email: string;
+  name: string;
+  role: string;
+  status: string;
+  organizationId?: { toString(): string } | null;
+  mustChangePassword: boolean;
+}) {
+  return {
+    id: user._id.toString(),
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    status: user.status,
+    organizationId: user.organizationId ? user.organizationId.toString() : null,
+    mustChangePassword: user.mustChangePassword,
+  };
+}
+
+export async function presentSessionUser(userId: string) {
+  const user = await UserModel.findById(userId);
+  if (!user) {
+    throw new AppError("UNAUTHORIZED", "Authentication is required", 401);
+  }
+  const organization = user.organizationId
+    ? await OrganizationModel.findById(user.organizationId)
+    : null;
+  return {
+    ...presentUser(user),
+    organization: organization
+      ? {
+          id: organization._id.toString(),
+          name: organization.name,
+          status: organization.status,
+          timezone: organization.timezone,
+          currency: organization.currency,
+        }
+      : null,
+  };
+}
+
+export async function createEmployee(
+  actor: AuthContext,
+  organizationId: string,
+  input: CreateEmployeeInput,
+  meta: RequestMeta,
+) {
+  try {
+    const passwordHash = await hashPassword(input.temporaryPassword);
+    const user = await UserModel.create({
+      organizationId,
+      email: input.email,
+      name: input.name,
+      passwordHash,
+      role: input.role,
+      status: "active",
+      mustChangePassword: false,
+      tokenVersion: 0,
+    });
+    await recordAudit({
+      actor,
+      action: "user.created",
+      entityType: "user",
+      entityId: user._id.toString(),
+      organizationId,
+      after: { email: user.email, role: user.role },
+      meta,
+    });
+    return presentUser(user);
+  } catch (error) {
+    if (isDuplicateKey(error)) {
+      throw new AppError("CONFLICT", "A user with this email already exists", 409);
+    }
+    throw error;
+  }
+}
+
+export async function listEmployees(organizationId: string, query: ListQuery) {
+  const filter: { organizationId: string; status?: "active" | "disabled" } = { organizationId };
+  if (query.status) {
+    filter.status = query.status;
+  }
+  const skip = (query.page - 1) * query.limit;
+  const [users, total] = await Promise.all([
+    UserModel.find(filter).sort(userSorts[query.sort]).skip(skip).limit(query.limit),
+    UserModel.countDocuments(filter),
+  ]);
+  return {
+    items: users.map((user) => presentUser(user)),
+    meta: { page: query.page, limit: query.limit, total },
+  };
+}
+
+export async function updateEmployee(
+  actor: AuthContext,
+  organizationId: string,
+  userId: string,
+  input: UpdateEmployeeInput,
+  meta: RequestMeta,
+) {
+  const user = await UserModel.findOne({ _id: userId, organizationId });
+  if (!user) {
+    throw new AppError("NOT_FOUND", "Employee was not found", 404);
+  }
+
+  const nextRole = input.role ?? user.role;
+  const nextStatus = input.status ?? user.status;
+  if (user.role === "org_admin" && user.status === "active" && (nextRole !== "org_admin" || nextStatus !== "active")) {
+    const otherAdmins = await UserModel.countDocuments({
+      organizationId,
+      role: "org_admin",
+      status: "active",
+      _id: { $ne: user._id },
+    });
+    if (otherAdmins === 0) {
+      throw new AppError("INVALID_STATE", "The organization must keep one active administrator", 422);
+    }
+  }
+
+  const before = { role: user.role, status: user.status };
+  if (input.role) {
+    user.role = input.role;
+  }
+  if (input.status) {
+    user.status = input.status;
+  }
+  if (input.temporaryPassword) {
+    user.passwordHash = await hashPassword(input.temporaryPassword);
+    user.mustChangePassword = false;
+    user.tokenVersion += 1;
+    await revokeAllRefreshTokens(user._id.toString());
+  }
+  if (input.status === "disabled") {
+    user.tokenVersion += 1;
+    await revokeAllRefreshTokens(user._id.toString());
+  }
+  await user.save();
+  await recordAudit({
+    actor,
+    action: "user.updated",
+    entityType: "user",
+    entityId: user._id.toString(),
+    organizationId,
+    before,
+    after: { role: user.role, status: user.status, passwordReset: Boolean(input.temporaryPassword) },
+    meta,
+  });
+  return presentUser(user);
+}
+
+export function isTenantRole(role: string): role is TenantRole {
+  return role !== "super_admin";
+}

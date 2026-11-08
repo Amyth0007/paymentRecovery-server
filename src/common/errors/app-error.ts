@@ -9,7 +9,7 @@ export class AppError extends Error {
     this.code = code;
     this.statusCode = statusCode;
     if (details !== undefined) {
-      this.details = details;
+      this.details = details;  
     }
   }
 }

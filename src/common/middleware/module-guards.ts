@@ -17,7 +17,9 @@ export async function assertModuleAccess(organizationId: string, moduleKey: Modu
   await assertModuleEnabled(organizationId, moduleKey);
   if (actor && actor.role !== "org_admin" && actor.role !== "super_admin") {
     const user = await UserModel.findById(actor.userId).select("modulePermissions modulePermissionsConfigured");
-    if (user?.modulePermissionsConfigured && !user.modulePermissions?.get(moduleKey)) throw new AppError("MODULE_DISABLED", "Your administrator has not granted access to this screen", 403);
+    if (!user?.modulePermissionsConfigured || user.modulePermissions?.get(moduleKey) !== true) {
+      throw new AppError("MODULE_DISABLED", "Your administrator has not granted access to this screen", 403);
+    }
   }
 }
 

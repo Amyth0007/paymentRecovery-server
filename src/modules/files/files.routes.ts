@@ -11,7 +11,7 @@ import {
 } from "../../common/middleware/auth-guards.js";
 import { sendSuccess } from "../../common/utils/api-response.js";
 import { requestMeta } from "../audit-logs/audit.service.js";
-import { ALLOWED_MIME_TYPES, MAX_FILE_SIZE_BYTES, uploadParamsSchema } from "./files.schemas.js";
+import { isAllowedImageMimeType, MAX_FILE_SIZE_BYTES, uploadParamsSchema } from "./files.schemas.js";
 import { getFileAsset, saveUploadedFile } from "./files.service.js";
 import { assertModuleAccess } from "../../common/middleware/module-guards.js";
 import type { ModuleKey } from "../organizations/module-registry.js";
@@ -33,10 +33,10 @@ const upload = multer({
     fileSize: MAX_FILE_SIZE_BYTES,
   },
   fileFilter: (_req, file, cb) => {
-    if (ALLOWED_MIME_TYPES.includes(file.mimetype as (typeof ALLOWED_MIME_TYPES)[number])) {
+    if (isAllowedImageMimeType(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new AppError("VALIDATION_ERROR", `Unsupported file type: ${file.mimetype}`, 400));
+      cb(new AppError("VALIDATION_ERROR", "Only image files are accepted; PDF and other documents are not supported", 400));
     }
   },
 });
@@ -100,6 +100,8 @@ export function createFilesRouter(config: AuthConfig) {
       if (req.query.inline === "true") {
         res.setHeader("Content-Disposition", "inline");
         res.setHeader("Cache-Control", "private, max-age=300");
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'");
         if (fileAsset.storageUrl) {
           const upstream = await fetch(fileAsset.storageUrl);
           if (!upstream.ok) {
@@ -120,6 +122,8 @@ export function createFilesRouter(config: AuthConfig) {
       }
       if (!absolutePath) throw new AppError("NOT_FOUND", "File content was not found", 404);
       res.setHeader("Content-Type", fileAsset.mimeType);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'");
       res.setHeader(
         "Content-Disposition",
         `inline; filename="${encodeURIComponent(fileAsset.originalFilename)}"`,

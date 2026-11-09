@@ -25,11 +25,6 @@ export const fileIdParamSchema = z.object({
   id: objectIdSchema,
 });
 
-export const ALLOWED_MIME_TYPES = [
-  "application/pdf",
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-] as const;
+export const isAllowedImageMimeType = (mimeType: string) => mimeType.toLowerCase().startsWith("image/");
 
 export const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB

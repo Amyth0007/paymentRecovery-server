@@ -52,10 +52,11 @@ export const attendanceAdjustmentSchema = z.object({
 
 export const correctionCreateSchema = z.object({
   attendanceRecordId: objectIdSchema,
-  requestedCheckOutAt: z.iso.datetime({ offset: true }),
+  requestedCheckInAt: z.iso.datetime({ offset: true }).optional(),
+  requestedCheckOutAt: z.iso.datetime({ offset: true }).optional(),
   reason: z.string().trim().min(3).max(1000),
   evidenceFileAssetId: objectIdSchema.optional(),
-});
+}).refine((value) => Boolean(value.requestedCheckInAt || value.requestedCheckOutAt), "Enter a corrected check-in time, check-out time, or both");
 
 export const correctionReviewSchema = z.object({
   decision: z.enum(["approved", "rejected"]),

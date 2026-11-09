@@ -341,27 +341,35 @@ export async function createCorrectionRequest(actor: AuthContext, organizationId
   if (policy?.correctionRequestsEnabled === false) throw new AppError("FEATURE_DISABLED", "Attendance correction requests are disabled", 403);
   const record = await AttendanceRecordModel.findOne({ _id: input.attendanceRecordId, organizationId, employeeId: actor.userId });
   if (!record?.checkIn) throw new AppError("NOT_FOUND", "Your attendance record was not found", 404);
-  if (record.checkOut || record.correctedCheckOutAt) throw new AppError("INVALID_STATE", "This attendance record already has a check-out", 409);
-  const requestedCheckOutAt = new Date(input.requestedCheckOutAt);
-  if (requestedCheckOutAt <= record.checkIn.at || requestedCheckOutAt > new Date()) throw new AppError("VALIDATION_ERROR", "Requested check-out must be after check-in and not in the future", 422);
+  if (await AttendanceAdjustmentModel.exists({ organizationId, employeeId: actor.userId, attendanceDate: record.attendanceDate })) throw new AppError("INVALID_STATE", "This attendance was manually adjusted by an administrator. Contact them for further changes.", 409);
+  const requestedCheckInAt = input.requestedCheckInAt ? new Date(input.requestedCheckInAt) : null;
+  const requestedCheckOutAt = input.requestedCheckOutAt ? new Date(input.requestedCheckOutAt) : null;
+  const proposedCheckIn = requestedCheckInAt ?? record.checkIn.at;
+  const existingCheckOut = record.checkOut?.at ?? record.correctedCheckOutAt ?? null;
+  const proposedCheckOut = requestedCheckOutAt ?? existingCheckOut;
+  const organization = await assertTenantAccessible(organizationId);
+  const isSameAttendanceDate = (date: Date) => dateForTimezone(date, organization.timezone) === record.attendanceDate;
+  if (requestedCheckInAt && (requestedCheckInAt > new Date() || !isSameAttendanceDate(requestedCheckInAt))) throw new AppError("VALIDATION_ERROR", "Corrected check-in must be on the attendance date and not in the future", 422);
+  if (requestedCheckOutAt && (requestedCheckOutAt > new Date() || !isSameAttendanceDate(requestedCheckOutAt))) throw new AppError("VALIDATION_ERROR", "Corrected check-out must be on the attendance date and not in the future", 422);
+  if (proposedCheckOut && proposedCheckOut <= proposedCheckIn) throw new AppError("VALIDATION_ERROR", "Check-out must be after check-in", 422);
   const evidence = input.evidenceFileAssetId
     ? await FileAssetModel.findOne({ _id: input.evidenceFileAssetId, organizationId, uploadedBy: actor.userId })
     : null;
   if (input.evidenceFileAssetId && !evidence) throw new AppError("NOT_FOUND", "Correction evidence was not found", 404);
   const existing = await AttendanceCorrectionModel.findOne({ organizationId, attendanceRecordId: record._id, status: "pending" });
   if (existing) throw new AppError("CONFLICT", "A correction request is already pending for this attendance", 409);
-  const correction = await AttendanceCorrectionModel.create({ organizationId, attendanceRecordId: record._id, employeeId: actor.userId, requestedCheckOutAt, reason: input.reason, evidenceFileAssetId: evidence?._id ?? null });
-  await recordAudit({ actor, action: "attendance.correction_requested", entityType: "attendance_correction", entityId: correction._id.toString(), organizationId, after: { attendanceRecordId: record._id.toString(), requestedCheckOutAt, reason: input.reason }, meta });
+  const correction = await AttendanceCorrectionModel.create({ organizationId, attendanceRecordId: record._id, employeeId: actor.userId, requestedCheckInAt, requestedCheckOutAt, reason: input.reason, evidenceFileAssetId: evidence?._id ?? null });
+  await recordAudit({ actor, action: "attendance.correction_requested", entityType: "attendance_correction", entityId: correction._id.toString(), organizationId, after: { attendanceRecordId: record._id.toString(), requestedCheckInAt, requestedCheckOutAt, reason: input.reason }, meta });
   return presentCorrection(correction);
 }
 
 function presentCorrection(correction: {
   _id: { toString(): string }; attendanceRecordId: { toString(): string }; employeeId: { toString(): string };
-  requestedCheckOutAt: Date; reason: string; evidenceFileAssetId?: { toString(): string } | null;
+  requestedCheckInAt?: Date | null; requestedCheckOutAt?: Date | null; reason: string; evidenceFileAssetId?: { toString(): string } | null;
   status: string; reviewedBy?: { toString(): string } | null; reviewedAt?: Date | null;
   reviewComment?: string; createdAt: Date;
 }) {
-  return { id: correction._id.toString(), attendanceRecordId: correction.attendanceRecordId.toString(), employeeId: correction.employeeId.toString(), requestedCheckOutAt: correction.requestedCheckOutAt, reason: correction.reason, evidenceFileAssetId: correction.evidenceFileAssetId?.toString() ?? null, status: correction.status, reviewedBy: correction.reviewedBy?.toString() ?? null, reviewedAt: correction.reviewedAt ?? null, reviewComment: correction.reviewComment ?? "", createdAt: correction.createdAt };
+  return { id: correction._id.toString(), attendanceRecordId: correction.attendanceRecordId.toString(), employeeId: correction.employeeId.toString(), requestedCheckInAt: correction.requestedCheckInAt ?? null, requestedCheckOutAt: correction.requestedCheckOutAt ?? null, reason: correction.reason, evidenceFileAssetId: correction.evidenceFileAssetId?.toString() ?? null, status: correction.status, reviewedBy: correction.reviewedBy?.toString() ?? null, reviewedAt: correction.reviewedAt ?? null, reviewComment: correction.reviewComment ?? "", createdAt: correction.createdAt };
 }
 
 export async function listCorrections(organizationId: string, query: CorrectionQuery) {
@@ -372,9 +380,13 @@ export async function listCorrections(organizationId: string, query: CorrectionQ
     AttendanceCorrectionModel.countDocuments(filter),
   ]);
   const employeeIds = [...new Set(corrections.map((correction) => correction.employeeId.toString()))];
-  const employees = await UserModel.find({ _id: { $in: employeeIds }, organizationId }).select("name email");
+  const [employees, records] = await Promise.all([
+    UserModel.find({ _id: { $in: employeeIds }, organizationId }).select("name email"),
+    AttendanceRecordModel.find({ _id: { $in: corrections.map((correction) => correction.attendanceRecordId) }, organizationId }).select("attendanceDate checkIn.at checkOut.at correctedCheckOutAt"),
+  ]);
   const employeeMap = new Map(employees.map((employee) => [employee._id.toString(), { name: employee.name, email: employee.email }]));
-  return { items: corrections.map((correction) => ({ ...presentCorrection(correction), employee: employeeMap.get(correction.employeeId.toString()) ?? null })), meta: { page: query.page, limit: query.limit, total } };
+  const recordMap = new Map(records.map((record) => [record._id.toString(), { attendanceDate: record.attendanceDate, currentCheckInAt: record.checkIn?.at ?? null, currentCheckOutAt: record.checkOut?.at ?? record.correctedCheckOutAt ?? null }]));
+  return { items: corrections.map((correction) => ({ ...presentCorrection(correction), ...recordMap.get(correction.attendanceRecordId.toString()), employee: employeeMap.get(correction.employeeId.toString()) ?? null })), meta: { page: query.page, limit: query.limit, total } };
 }
 
 export async function listEmployeeCorrections(actor: AuthContext, organizationId: string, query: CorrectionQuery) {
@@ -384,31 +396,45 @@ export async function listEmployeeCorrections(actor: AuthContext, organizationId
     AttendanceCorrectionModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(query.limit),
     AttendanceCorrectionModel.countDocuments(filter),
   ]);
-  return { items: corrections.map(presentCorrection), meta: { page: query.page, limit: query.limit, total } };
+  const records = await AttendanceRecordModel.find({ _id: { $in: corrections.map((correction) => correction.attendanceRecordId) }, organizationId }).select("attendanceDate checkIn.at checkOut.at correctedCheckOutAt");
+  const recordMap = new Map(records.map((record) => [record._id.toString(), { attendanceDate: record.attendanceDate, currentCheckInAt: record.checkIn?.at ?? null, currentCheckOutAt: record.checkOut?.at ?? record.correctedCheckOutAt ?? null }]));
+  return { items: corrections.map((correction) => ({ ...presentCorrection(correction), ...recordMap.get(correction.attendanceRecordId.toString()) })), meta: { page: query.page, limit: query.limit, total } };
 }
 
 export async function reviewCorrection(actor: AuthContext, organizationId: string, correctionId: string, input: CorrectionReview, meta: RequestMeta) {
   const correction = await AttendanceCorrectionModel.findOne({ _id: correctionId, organizationId, status: "pending" });
   if (!correction) throw new AppError("NOT_FOUND", "Pending correction request not found", 404);
   const record = await AttendanceRecordModel.findOne({ _id: correction.attendanceRecordId, organizationId, employeeId: correction.employeeId });
-  if (!record?.checkIn || record.checkOut || record.correctedCheckOutAt) throw new AppError("INVALID_STATE", "Attendance record cannot accept this correction", 409);
-  const before = { status: record.status, checkOutAt: null, correctedCheckOutAt: record.correctedCheckOutAt ?? null };
+  if (!record?.checkIn) throw new AppError("INVALID_STATE", "Attendance record cannot accept this correction", 409);
+  const before = { status: record.status, checkInAt: record.checkIn.at, checkOutAt: record.checkOut?.at ?? null, correctedCheckOutAt: record.correctedCheckOutAt ?? null };
   correction.status = input.decision;
   correction.reviewedBy = new Types.ObjectId(actor.userId);
   correction.reviewedAt = new Date();
   correction.reviewComment = input.comment;
   if (input.decision === "approved") {
     const policy = await AttendancePolicyModel.findOne({ organizationId });
-    const checkOutAt = correction.requestedCheckOutAt;
-    record.correctedCheckOutAt = checkOutAt;
-    record.correctionId = correction._id;
-    record.status = "completed";
-    record.totalWorkingMinutes = Math.floor((checkOutAt.getTime() - record.checkIn.at.getTime()) / 60_000);
-    record.halfDay = record.totalWorkingMinutes < (policy?.halfDayHours ?? 4) * 60;
-    correction.appliedChange = { field: "checkOutAt", before: null, after: checkOutAt, approvedBy: actor.userId, reason: correction.reason };
+    const changes: Record<string, unknown> = {};
+    if (correction.requestedCheckInAt) {
+      changes.checkInAt = { before: record.checkIn.at, after: correction.requestedCheckInAt };
+      record.checkIn.at = correction.requestedCheckInAt;
+    }
+    if (correction.requestedCheckOutAt) {
+      const priorCheckOutAt = record.checkOut?.at ?? record.correctedCheckOutAt ?? null;
+      changes.checkOutAt = { before: priorCheckOutAt, after: correction.requestedCheckOutAt };
+      if (record.checkOut) record.checkOut.at = correction.requestedCheckOutAt;
+      else record.correctedCheckOutAt = correction.requestedCheckOutAt;
+      record.correctionId = correction._id;
+      record.status = "completed";
+    }
+    const effectiveCheckOutAt = record.checkOut?.at ?? record.correctedCheckOutAt ?? null;
+    if (effectiveCheckOutAt) {
+      record.totalWorkingMinutes = Math.floor((effectiveCheckOutAt.getTime() - record.checkIn.at.getTime()) / 60_000);
+      record.halfDay = record.totalWorkingMinutes < (policy?.halfDayHours ?? 4) * 60;
+    }
+    correction.appliedChange = { fields: changes, approvedBy: actor.userId, reason: correction.reason };
     await record.save();
   }
   await correction.save();
-  await recordAudit({ actor, action: `attendance.correction_${input.decision}`, entityType: "attendance_correction", entityId: correction._id.toString(), organizationId, before, after: { status: record.status, correctionStatus: correction.status, requestedCheckOutAt: correction.requestedCheckOutAt, reviewComment: correction.reviewComment }, reason: input.comment || correction.reason, meta });
+  await recordAudit({ actor, action: `attendance.correction_${input.decision}`, entityType: "attendance_correction", entityId: correction._id.toString(), organizationId, before, after: { status: record.status, correctionStatus: correction.status, requestedCheckInAt: correction.requestedCheckInAt, requestedCheckOutAt: correction.requestedCheckOutAt, reviewComment: correction.reviewComment }, reason: input.comment || correction.reason, meta });
   return presentCorrection(correction);
 }

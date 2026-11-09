@@ -21,6 +21,7 @@ import { createPaymentRouter } from "./modules/payments/payment.routes.js";
 import { createRecoveryRouter } from "./modules/recovery/recovery.routes.js";
 import { createReportsRouter } from "./modules/reports/reports.routes.js";
 import { createUserRouter } from "./modules/users/user.routes.js";
+import { createGmailRouter } from "./modules/gmail/gmail.routes.js";
 import "./types/express.js";
 
 export type AppDependencies = {
@@ -72,6 +73,7 @@ export function createApp(dependencies: AppDependencies) {
   app.use("/api/v1/recovery-assignments", createRecoveryRouter(dependencies.authConfig));
   app.use("/api/v1/commitments", createCommitmentRouter(dependencies.authConfig));
   app.use("/api/v1/reports", createReportsRouter(dependencies.authConfig));
+  app.use("/api/v1/gmail", createGmailRouter(dependencies.authConfig));
   app.use(notFoundHandler);
   app.use(createErrorHandler(dependencies.logger));
 

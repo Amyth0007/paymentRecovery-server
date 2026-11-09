@@ -60,3 +60,21 @@ describe("unknown routes", () => {
     });
   });
 });
+
+describe("Gmail API access control", () => {
+  it("requires authentication before exposing the organization Gmail connection", async () => {
+    const response = await request(buildApp(() => true)).get("/api/v1/gmail/connection");
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe("UNAUTHORIZED");
+  });
+
+  it("requires authentication before accepting a send request", async () => {
+    const response = await request(buildApp(() => true))
+      .post("/api/v1/gmail/send")
+      .send({ customerId: "000000000000000000000000", recipientEmail: "recipient@example.com", subject: "Hello", body: "Message" });
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe("UNAUTHORIZED");
+  });
+});

@@ -9,7 +9,7 @@ import {
   accessTokenFor,
   hashNewPassword,
   issueRefreshToken,
-  logoutUser,
+  logoutByRefreshToken,
   passwordMatches,
   revokeAllRefreshTokens,
   rotateRefreshToken,
@@ -65,8 +65,8 @@ export async function refresh(rawToken: string | undefined, config: AuthConfig) 
   return { accessToken, refreshToken: rotated.refreshToken, user: profile };
 }
 
-export async function logout(actor: AuthContext, rawToken: string | undefined) {
-  await logoutUser(actor.userId, rawToken ?? null);
+export async function logout(rawToken: string | undefined) {
+  await logoutByRefreshToken(rawToken ?? null);
 }
 
 export async function getMe(actor: AuthContext) {

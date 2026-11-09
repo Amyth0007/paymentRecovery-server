@@ -69,9 +69,8 @@ export function createAuthRouter(config: AuthConfig) {
 
   router.post(
     "/logout",
-    requireAuth,
     asyncHandler(async (req, res) => {
-      await logout(req.auth!, readRefreshCookie(req));
+      await logout(readRefreshCookie(req));
       res.clearCookie(REFRESH_COOKIE, cookieOptions(config));
       sendSuccess(res, { loggedOut: true });
     }),

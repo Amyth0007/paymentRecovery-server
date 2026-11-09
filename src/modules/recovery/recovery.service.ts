@@ -8,6 +8,7 @@ import { InvoiceModel } from "../invoices/invoice.model.js";
 import { UserModel } from "../users/user.model.js";
 import { RecoveryAssignmentModel } from "./recovery-assignment.model.js";
 import { RecoveryVisitModel } from "./recovery-visit.model.js";
+import { RecoveryCallAttemptModel } from "./recovery-call-attempt.model.js";
 import type {
   assignmentListQuerySchema,
   createAssignmentSchema,
@@ -370,10 +371,64 @@ export async function getAssignment(
     .populate("fileAssetIds", "originalFilename mimeType sizeBytes")
     .sort({ createdAt: -1 });
 
+  const callAttemptCounts = await RecoveryCallAttemptModel.aggregate<{ _id: unknown; count: number }>([
+    { $match: { organizationId: assignment.organizationId, assignmentId: assignment._id } },
+    { $group: { _id: "$invoiceId", count: { $sum: 1 } } },
+  ]);
+  const countsByInvoiceId = new Map(callAttemptCounts.map((entry) => [String(entry._id), entry.count]));
+  const presentedAssignment = presentAssignment(assignment);
+  presentedAssignment.invoices = presentedAssignment.invoices.map((invoice: { id: string }) => ({
+    ...invoice,
+    callAttemptCount: countsByInvoiceId.get(invoice.id) ?? 0,
+  }));
+
   return {
-    assignment: presentAssignment(assignment),
+    assignment: presentedAssignment,
     visits: visits.map(presentVisit),
   };
+}
+
+export async function createCallAttempt(
+  actor: AuthContext,
+  organizationId: string,
+  assignmentId: string,
+  invoiceId: string,
+  meta: RequestMeta,
+) {
+  const filter: QueryFilter = { _id: assignmentId, organizationId };
+  if (actor.role === "field_recovery") filter.assigneeId = actor.userId;
+  const assignment = await RecoveryAssignmentModel.findOne(filter);
+  if (!assignment) throw new AppError("NOT_FOUND", "Assignment not found", 404);
+  if (!assignment.invoiceIds.some((id) => id.toString() === invoiceId)) {
+    throw new AppError("NOT_FOUND", "Invoice is not part of this recovery assignment", 404);
+  }
+
+  const customer = await CustomerModel.findOne({ _id: assignment.customerId, organizationId }).select("phone");
+  const phone = customer?.phone.trim() ?? "";
+  const dialablePhone = phone.replace(/[^\d+]/g, "");
+  if (dialablePhone.replace(/\D/g, "").length < 5) {
+    throw new AppError("INVALID_STATE", "Add a valid customer phone number before calling", 422);
+  }
+
+  const attempt = await RecoveryCallAttemptModel.create({
+    organizationId,
+    assignmentId: assignment._id,
+    invoiceId,
+    customerId: assignment.customerId,
+    employeeId: actor.userId,
+    attemptedAt: new Date(),
+  });
+  const callAttemptCount = await RecoveryCallAttemptModel.countDocuments({ organizationId, assignmentId, invoiceId });
+  await recordAudit({
+    actor,
+    action: "recovery.customer_call_attempted",
+    entityType: "recovery_call_attempt",
+    entityId: attempt._id.toString(),
+    organizationId,
+    after: { assignmentId, invoiceId, callAttemptCount },
+    meta,
+  });
+  return { invoiceId, callAttemptCount, phone: dialablePhone, attemptedAt: attempt.attemptedAt };
 }
 
 export async function listVisits(actor: AuthContext, organizationId: string, assignmentId: string) {

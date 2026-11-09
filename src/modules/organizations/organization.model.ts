@@ -26,6 +26,7 @@ const organizationSchema = new Schema(
       default: "active",
     },
     settings: { type: settingsSchema, default: () => ({}) },
+    modules: { type: Map, of: Boolean, default: () => new Map() },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
   },
   { timestamps: true },

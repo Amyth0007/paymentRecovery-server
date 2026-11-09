@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { TENANT_ROLES } from "../../common/auth/auth-context.js";
 import { isValidTimeZone } from "../../common/utils/calendar-date.js";
+import { MODULES } from "../../modules/organizations/module-registry.js";
 
 export const objectIdSchema = z.string().regex(/^[a-f\d]{24}$/i, "Invalid id");
 
@@ -39,6 +40,9 @@ export const updateStatusSchema = z.object({
   status: z.enum(["active", "suspended", "deactivated"]),
   reason: z.string().trim().min(3).max(500),
 });
+
+export const moduleKeySchema = z.enum(Object.keys(MODULES) as [keyof typeof MODULES, ...(keyof typeof MODULES)[]]);
+export const updateModuleSchema = z.object({ enabled: z.boolean() });
 
 export const createPlanSchema = z.object({
   code: z.string().trim().toLowerCase().min(2).max(40).regex(/^[a-z0-9-]+$/),

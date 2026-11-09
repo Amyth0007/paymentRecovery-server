@@ -19,6 +19,7 @@ import {
   OrganizationSubscriptionModel,
   SubscriptionPlanModel,
 } from "./organization.model.js";
+import { MODULES, type ModuleKey } from "./module-registry.js";
 
 type CreateOrganizationInput = z.infer<typeof createOrganizationSchema>;
 type UpdateStatusInput = z.infer<typeof updateStatusSchema>;
@@ -104,11 +105,40 @@ export async function presentOrganization(organizationId: string) {
     timezone: organization.timezone,
     currency: organization.currency,
     status: organization.status,
+    modules: Object.fromEntries(Object.keys(MODULES).map((key) => [key, organization.modules?.get(key) === true])),
     settings: presentSettings(organization.settings),
     subscription: await subscriptionSummary(organization._id.toString()),
     usage: await usageFor(organization._id.toString()),
     createdAt: organization.createdAt,
   };
+}
+
+export async function updateOrganizationModule(
+  actor: AuthContext,
+  organizationId: string,
+  moduleKey: ModuleKey,
+  enabled: boolean,
+  meta: RequestMeta,
+) {
+  const organization = await OrganizationModel.findById(organizationId);
+  if (!organization) throw new AppError("NOT_FOUND", "Organization was not found", 404);
+  const before = organization.modules?.get(moduleKey) === true;
+  organization.modules ??= new Map<string, boolean>();
+  organization.modules.set(moduleKey, enabled);
+  organization.markModified("modules");
+  await organization.save();
+  await recordAudit({
+    actor,
+    action: "organization.module_changed",
+    entityType: "organization",
+    entityId: organization._id.toString(),
+    organizationId: organization._id.toString(),
+    before: { module: moduleKey, enabled: before },
+    after: { module: moduleKey, enabled },
+    reason: MODULES[moduleKey].name,
+    meta,
+  });
+  return presentOrganization(organization._id.toString());
 }
 
 export async function createOrganization(

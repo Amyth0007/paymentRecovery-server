@@ -59,6 +59,7 @@ export async function presentSessionUser(userId: string) {
           status: organization.status,
           timezone: organization.timezone,
           currency: organization.currency,
+          modules: Object.fromEntries(["attendance"].map((key) => [key, organization.modules?.get(key) === true])),
         }
       : null,
   };

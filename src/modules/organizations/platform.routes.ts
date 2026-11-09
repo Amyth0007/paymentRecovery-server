@@ -7,6 +7,8 @@ import {
   objectIdSchema,
   organizationListQuerySchema,
   updateStatusSchema,
+  moduleKeySchema,
+  updateModuleSchema,
   upsertSubscriptionSchema,
 } from "../../common/validators/schemas.js";
 import { asyncHandler } from "../../common/middleware/async-handler.js";
@@ -26,6 +28,7 @@ import {
   listPlans,
   presentOrganization,
   updateOrganizationStatus,
+  updateOrganizationModule,
   upsertSubscription,
 } from "./organization.service.js";
 
@@ -57,6 +60,16 @@ export function createPlatformRouter(config: AuthConfig) {
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(res, await presentOrganization(id));
+    }),
+  );
+
+  router.patch(
+    "/organizations/:id/modules/:moduleId",
+    asyncHandler(async (req, res) => {
+      const id = objectIdSchema.parse(req.params.id);
+      const moduleId = moduleKeySchema.parse(req.params.moduleId);
+      const body = updateModuleSchema.parse(req.body);
+      sendSuccess(res, await updateOrganizationModule(req.auth!, id, moduleId, body.enabled, requestMeta(req)));
     }),
   );
 

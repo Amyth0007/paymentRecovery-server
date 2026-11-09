@@ -19,6 +19,7 @@ import {
 } from "./recovery.schemas.js";
 import {
   createAssignment,
+  createCallAttempt,
   createVisit,
   getAssignment,
   listAssignments,
@@ -82,6 +83,16 @@ export function createRecoveryRouter(config: AuthConfig) {
           requestMeta(req),
         ),
       );
+    }),
+  );
+
+  router.post(
+    "/:id/invoices/:invoiceId/call-attempts",
+    requireRole("org_admin", "accounts_manager", "field_recovery"),
+    asyncHandler(async (req, res) => {
+      const assignmentId = objectIdSchema.parse(req.params.id);
+      const invoiceId = objectIdSchema.parse(req.params.invoiceId);
+      sendSuccess(res, await createCallAttempt(req.auth!, req.auth!.organizationId!, assignmentId, invoiceId, requestMeta(req)), undefined, 201);
     }),
   );
 

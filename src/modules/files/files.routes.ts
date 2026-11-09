@@ -13,6 +13,7 @@ import { sendSuccess } from "../../common/utils/api-response.js";
 import { requestMeta } from "../audit-logs/audit.service.js";
 import { ALLOWED_MIME_TYPES, MAX_FILE_SIZE_BYTES, uploadParamsSchema } from "./files.schemas.js";
 import { getFileAsset, saveUploadedFile } from "./files.service.js";
+import { assertModuleEnabled } from "../../common/middleware/module-guards.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -42,6 +43,7 @@ export function createFilesRouter(config: AuthConfig) {
         throw new AppError("VALIDATION_ERROR", "A file is required", 400);
       }
       const parsed = uploadParamsSchema.parse(req.body);
+      if (parsed.purpose === "attendance_photo" || parsed.purpose === "attendance_correction") await assertModuleEnabled(req.auth!.organizationId!, "attendance");
       const result = await saveUploadedFile(
         req.auth!,
         req.auth!.organizationId!,
@@ -60,6 +62,27 @@ export function createFilesRouter(config: AuthConfig) {
         req.auth!.organizationId!,
         req.params.id as string,
       );
+      const attendanceFile = fileAsset.purpose === "attendance_photo" || fileAsset.purpose === "attendance_correction";
+      if (attendanceFile) await assertModuleEnabled(req.auth!.organizationId!, "attendance");
+      if (attendanceFile && fileAsset.uploadedBy.toString() !== req.auth!.userId && req.auth!.role !== "org_admin") {
+        throw new AppError("FORBIDDEN", "Attendance photos are only available to the employee and organization administrators", 403);
+      }
+      if (attendanceFile) {
+        res.setHeader("Content-Disposition", "inline");
+        res.setHeader("Cache-Control", "private, max-age=60");
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        if (fileAsset.storageUrl) {
+          const upstream = await fetch(fileAsset.storageUrl);
+          if (!upstream.ok) throw new AppError("FILE_CONTENT_UNAVAILABLE", "Attendance photo could not be loaded", 502);
+          res.setHeader("Content-Type", fileAsset.mimeType);
+          res.send(Buffer.from(await upstream.arrayBuffer()));
+          return;
+        }
+        if (!absolutePath) throw new AppError("NOT_FOUND", "Attendance photo content was not found", 404);
+        res.setHeader("Content-Type", fileAsset.mimeType);
+        res.sendFile(absolutePath);
+        return;
+      }
       if (req.query.inline === "true") {
         res.setHeader("Content-Disposition", "inline");
         res.setHeader("Cache-Control", "private, max-age=300");

@@ -86,6 +86,12 @@ export async function logoutUser(userId: string, rawToken: string | null): Promi
   await UserModel.updateOne({ _id: userId }, { $inc: { tokenVersion: 1 } });
 }
 
+export async function logoutByRefreshToken(rawToken: string | null): Promise<void> {
+  if (!rawToken) return;
+  const existing = await RefreshTokenModel.findOne({ tokenHash: hashRefreshToken(rawToken) });
+  if (existing) await logoutUser(existing.userId.toString(), rawToken);
+}
+
 export async function hashNewPassword(password: string): Promise<string> {
   return hashPassword(password);
 }

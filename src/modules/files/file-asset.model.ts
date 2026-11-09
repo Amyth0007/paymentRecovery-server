@@ -6,6 +6,8 @@ const FILE_PURPOSES = [
   "payment_support",
   "visit_evidence",
   "commitment_evidence",
+  "attendance_photo",
+  "attendance_correction",
 ] as const;
 
 const fileAssetSchema = new Schema(

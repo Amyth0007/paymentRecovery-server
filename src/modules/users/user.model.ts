@@ -8,6 +8,8 @@ const userSchema = new Schema(
     name: { type: String, required: true, trim: true },
     passwordHash: { type: String, required: true },
     role: { type: String, required: true, enum: ROLES },
+    modulePermissions: { type: Map, of: Boolean, default: () => new Map() },
+    modulePermissionsConfigured: { type: Boolean, required: true, default: false },
     status: { type: String, required: true, enum: ["active", "disabled"], default: "active" },
     mustChangePassword: { type: Boolean, required: true, default: false },
     tokenVersion: { type: Number, required: true, default: 0 },

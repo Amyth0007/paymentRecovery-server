@@ -76,6 +76,7 @@ export const createEmployeeSchema = z.object({
   email: z.email().trim().toLowerCase(),
   role: z.enum(TENANT_ROLES),
   temporaryPassword: passwordSchema,
+  modulePermissions: z.array(moduleKeySchema).optional(),
 });
 
 export const updateEmployeeSchema = z
@@ -83,8 +84,9 @@ export const updateEmployeeSchema = z
     role: z.enum(TENANT_ROLES).optional(),
     status: z.enum(["active", "disabled"]).optional(),
     temporaryPassword: passwordSchema.optional(),
+    modulePermissions: z.array(moduleKeySchema).optional(),
   })
-  .refine((value) => value.role !== undefined || value.status !== undefined || value.temporaryPassword !== undefined, {
+  .refine((value) => value.role !== undefined || value.status !== undefined || value.temporaryPassword !== undefined || value.modulePermissions !== undefined, {
     message: "No changes were provided",
   });
 

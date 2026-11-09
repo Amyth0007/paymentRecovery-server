@@ -3,6 +3,7 @@ export const ROLES = [
   "org_admin",
   "accounts_manager",
   "field_recovery",
+  "employee",
 ] as const;
 
 export type Role = (typeof ROLES)[number];
@@ -11,6 +12,7 @@ export const TENANT_ROLES = [
   "org_admin",
   "accounts_manager",
   "field_recovery",
+  "employee",
 ] as const;
 
 export type TenantRole = (typeof TENANT_ROLES)[number];

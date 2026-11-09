@@ -19,7 +19,7 @@ import {
   OrganizationSubscriptionModel,
   SubscriptionPlanModel,
 } from "./organization.model.js";
-import { MODULES, type ModuleKey } from "./module-registry.js";
+import { isModuleEnabled, MODULES, type ModuleKey } from "./module-registry.js";
 
 type CreateOrganizationInput = z.infer<typeof createOrganizationSchema>;
 type UpdateStatusInput = z.infer<typeof updateStatusSchema>;
@@ -105,7 +105,7 @@ export async function presentOrganization(organizationId: string) {
     timezone: organization.timezone,
     currency: organization.currency,
     status: organization.status,
-    modules: Object.fromEntries(Object.keys(MODULES).map((key) => [key, organization.modules?.get(key) === true])),
+    modules: Object.fromEntries(Object.keys(MODULES).map((key) => [key, isModuleEnabled(organization.modules, key as ModuleKey)])),
     settings: presentSettings(organization.settings),
     subscription: await subscriptionSummary(organization._id.toString()),
     usage: await usageFor(organization._id.toString()),
@@ -122,7 +122,7 @@ export async function updateOrganizationModule(
 ) {
   const organization = await OrganizationModel.findById(organizationId);
   if (!organization) throw new AppError("NOT_FOUND", "Organization was not found", 404);
-  const before = organization.modules?.get(moduleKey) === true;
+  const before = isModuleEnabled(organization.modules, moduleKey);
   organization.modules ??= new Map<string, boolean>();
   organization.modules.set(moduleKey, enabled);
   organization.markModified("modules");

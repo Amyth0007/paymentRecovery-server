@@ -8,6 +8,7 @@ import {
   userListQuerySchema,
 } from "../../common/validators/schemas.js";
 import { asyncHandler } from "../../common/middleware/async-handler.js";
+import { requireEnabledModule } from "../../common/middleware/module-guards.js";
 import {
   createRequireAuth,
   rejectMismatchedOrganization,
@@ -26,6 +27,7 @@ export function createUserRouter(config: AuthConfig) {
     requirePasswordChanged,
     requireTenant,
     requireRole("org_admin"),
+    requireEnabledModule("settings"),
     rejectMismatchedOrganization,
   );
 

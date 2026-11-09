@@ -13,7 +13,19 @@ import { sendSuccess } from "../../common/utils/api-response.js";
 import { requestMeta } from "../audit-logs/audit.service.js";
 import { ALLOWED_MIME_TYPES, MAX_FILE_SIZE_BYTES, uploadParamsSchema } from "./files.schemas.js";
 import { getFileAsset, saveUploadedFile } from "./files.service.js";
-import { assertModuleEnabled } from "../../common/middleware/module-guards.js";
+import { assertModuleAccess } from "../../common/middleware/module-guards.js";
+import type { ModuleKey } from "../organizations/module-registry.js";
+import type { Purpose } from "./files.service.js";
+
+const PURPOSE_MODULE: Partial<Record<Purpose, ModuleKey>> = {
+  invoice_document: "invoices",
+  acknowledgement_evidence: "invoices",
+  payment_support: "payments",
+  visit_evidence: "recovery",
+  commitment_evidence: "commitments",
+  attendance_photo: "attendance",
+  attendance_correction: "attendance",
+};
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -43,7 +55,8 @@ export function createFilesRouter(config: AuthConfig) {
         throw new AppError("VALIDATION_ERROR", "A file is required", 400);
       }
       const parsed = uploadParamsSchema.parse(req.body);
-      if (parsed.purpose === "attendance_photo" || parsed.purpose === "attendance_correction") await assertModuleEnabled(req.auth!.organizationId!, "attendance");
+      const requiredModule = PURPOSE_MODULE[parsed.purpose];
+      if (requiredModule) await assertModuleAccess(req.auth!.organizationId!, requiredModule, req.auth);
       const result = await saveUploadedFile(
         req.auth!,
         req.auth!.organizationId!,
@@ -63,7 +76,8 @@ export function createFilesRouter(config: AuthConfig) {
         req.params.id as string,
       );
       const attendanceFile = fileAsset.purpose === "attendance_photo" || fileAsset.purpose === "attendance_correction";
-      if (attendanceFile) await assertModuleEnabled(req.auth!.organizationId!, "attendance");
+      const requiredModule = PURPOSE_MODULE[fileAsset.purpose];
+      if (requiredModule) await assertModuleAccess(req.auth!.organizationId!, requiredModule, req.auth);
       if (attendanceFile && fileAsset.uploadedBy.toString() !== req.auth!.userId && req.auth!.role !== "org_admin") {
         throw new AppError("FORBIDDEN", "Attendance photos are only available to the employee and organization administrators", 403);
       }

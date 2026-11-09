@@ -13,11 +13,13 @@ import {
   attendanceDashboard, checkIn, checkOut, createCorrectionRequest, createOfficeLocation,
   getAttendanceConfig, listAttendanceRecords, listCorrections, listEmployeeCorrections,
   reviewCorrection, updateAttendancePolicy, updateOfficeLocation,
+  deleteOfficeLocation, upsertAttendanceAdjustment,
 } from "./attendance.service.js";
 import {
   attendanceListQuerySchema, attendancePolicySchema, attendancePunchSchema,
   correctionCreateSchema, correctionListQuerySchema, correctionReviewSchema,
   officeLocationSchema,
+  attendanceAdjustmentSchema,
 } from "./attendance.schemas.js";
 
 export function createAttendanceRouter(config: AuthConfig) {
@@ -45,6 +47,16 @@ export function createAttendanceRouter(config: AuthConfig) {
     sendSuccess(res, await updateOfficeLocation(req.auth!, req.auth!.organizationId!, id, input, requestMeta(req)));
   }));
 
+  router.delete("/locations/:id", requireRole("org_admin"), asyncHandler(async (req, res) => {
+    const id = objectIdSchema.parse(req.params.id);
+    sendSuccess(res, await deleteOfficeLocation(req.auth!, req.auth!.organizationId!, id, requestMeta(req)));
+  }));
+
+  router.put("/admin/adjustments", requireRole("org_admin"), asyncHandler(async (req, res) => {
+    const input = attendanceAdjustmentSchema.parse(req.body);
+    sendSuccess(res, await upsertAttendanceAdjustment(req.auth!, req.auth!.organizationId!, input, requestMeta(req)));
+  }));
+
   router.get("/dashboard", requireRole("org_admin"), asyncHandler(async (req, res) => {
     const date = typeof req.query.date === "string" ? req.query.date : undefined;
     sendSuccess(res, await attendanceDashboard(req.auth!.organizationId!, date));
@@ -57,7 +69,7 @@ export function createAttendanceRouter(config: AuthConfig) {
   }));
 
   router.post("/check-in", asyncHandler(async (req, res) => {
-    const input = attendancePunchSchema.extend({ officeLocationId: objectIdSchema }).parse(req.body);
+    const input = attendancePunchSchema.extend({ officeLocationId: objectIdSchema.optional() }).parse(req.body);
     sendSuccess(res, await checkIn(req.auth!, req.auth!.organizationId!, input, requestMeta(req)), undefined, 201);
   }));
 

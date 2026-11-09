@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { AuthConfig } from "../../common/auth/auth-context.js";
 import { asyncHandler } from "../../common/middleware/async-handler.js";
+import { requireEnabledModule } from "../../common/middleware/module-guards.js";
 import {
   createRequireAuth,
   rejectMismatchedOrganization,
@@ -28,11 +29,11 @@ export function createCustomerRouter(config: AuthConfig) {
   const router = Router();
   const requireAuth = createRequireAuth(config);
 
-  router.use(requireAuth, requirePasswordChanged, requireTenant, rejectMismatchedOrganization);
+  router.use(requireAuth, requirePasswordChanged, requireTenant, requireEnabledModule("customers"), rejectMismatchedOrganization);
 
   router.get(
     "/",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "accounts_manager", "employee"),
     asyncHandler(async (req, res) => {
       const query = customerListQuerySchema.parse(req.query);
       const result = await listCustomers(req.auth!.organizationId!, query);
@@ -57,7 +58,7 @@ export function createCustomerRouter(config: AuthConfig) {
 
   router.get(
     "/:id",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "accounts_manager", "employee"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(res, await getCustomer(req.auth!.organizationId!, id));

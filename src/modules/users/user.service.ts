@@ -6,6 +6,7 @@ import type { createEmployeeSchema, updateEmployeeSchema, userListQuerySchema } 
 import type { z } from "zod";
 import { recordAudit, type RequestMeta } from "../audit-logs/audit.service.js";
 import { OrganizationModel } from "../organizations/organization.model.js";
+import { isModuleEnabled, MODULES, type ModuleKey } from "../organizations/module-registry.js";
 import { revokeAllRefreshTokens } from "../auth/refresh-token.service.js";
 import { UserModel } from "./user.model.js";
 
@@ -30,6 +31,8 @@ export function presentUser(user: {
   status: string;
   organizationId?: { toString(): string } | null;
   mustChangePassword: boolean;
+  modulePermissions?: Map<string, boolean> | Record<string, boolean> | null;
+  modulePermissionsConfigured?: boolean;
 }) {
   return {
     id: user._id.toString(),
@@ -39,6 +42,8 @@ export function presentUser(user: {
     status: user.status,
     organizationId: user.organizationId ? user.organizationId.toString() : null,
     mustChangePassword: user.mustChangePassword,
+    modulePermissions: user.modulePermissions instanceof Map ? Object.fromEntries(user.modulePermissions) : user.modulePermissions ?? {},
+    modulePermissionsConfigured: user.modulePermissionsConfigured ?? false,
   };
 }
 
@@ -59,7 +64,7 @@ export async function presentSessionUser(userId: string) {
           status: organization.status,
           timezone: organization.timezone,
           currency: organization.currency,
-          modules: Object.fromEntries(["attendance"].map((key) => [key, organization.modules?.get(key) === true])),
+          modules: Object.fromEntries(Object.keys(MODULES).map((key) => [key, isModuleEnabled(organization.modules, key as ModuleKey)])),
         }
       : null,
   };
@@ -72,6 +77,8 @@ export async function createEmployee(
   meta: RequestMeta,
 ) {
   try {
+    const organization = await OrganizationModel.findById(organizationId);
+    if (input.role !== "org_admin" && input.modulePermissions?.some((key) => !isModuleEnabled(organization?.modules, key))) throw new AppError("VALIDATION_ERROR", "Staff can only be granted screens enabled for this organization", 422);
     const passwordHash = await hashPassword(input.temporaryPassword);
     const user = await UserModel.create({
       organizationId,
@@ -79,6 +86,8 @@ export async function createEmployee(
       name: input.name,
       passwordHash,
       role: input.role,
+      modulePermissions: input.role !== "org_admin" ? new Map((input.modulePermissions ?? []).map((key) => [key, true])) : new Map(),
+      modulePermissionsConfigured: input.role !== "org_admin" && input.modulePermissions !== undefined,
       status: "active",
       mustChangePassword: false,
       tokenVersion: 0,
@@ -143,12 +152,23 @@ export async function updateEmployee(
     }
   }
 
-  const before = { role: user.role, status: user.status };
+  const before = { role: user.role, status: user.status, modulePermissions: Object.fromEntries(user.modulePermissions ?? new Map()), modulePermissionsConfigured: user.modulePermissionsConfigured };
   if (input.role) {
     user.role = input.role;
   }
   if (input.status) {
     user.status = input.status;
+  }
+  if (input.role && input.role === "org_admin") {
+    user.modulePermissions = new Map();
+    user.modulePermissionsConfigured = false;
+  }
+  if (input.modulePermissions !== undefined) {
+    const organization = await OrganizationModel.findById(organizationId);
+    if (user.role === "org_admin") throw new AppError("VALIDATION_ERROR", "Organization administrators have full module access", 422);
+    if (input.modulePermissions.some((key) => !isModuleEnabled(organization?.modules, key))) throw new AppError("VALIDATION_ERROR", "Staff can only be granted screens enabled for this organization", 422);
+    user.modulePermissions = new Map(input.modulePermissions.map((key) => [key, true]));
+    user.modulePermissionsConfigured = true;
   }
   if (input.temporaryPassword) {
     user.passwordHash = await hashPassword(input.temporaryPassword);
@@ -168,7 +188,7 @@ export async function updateEmployee(
     entityId: user._id.toString(),
     organizationId,
     before,
-    after: { role: user.role, status: user.status, passwordReset: Boolean(input.temporaryPassword) },
+    after: { role: user.role, status: user.status, modulePermissions: Object.fromEntries(user.modulePermissions ?? new Map()), modulePermissionsConfigured: user.modulePermissionsConfigured, passwordReset: Boolean(input.temporaryPassword) },
     meta,
   });
   return presentUser(user);

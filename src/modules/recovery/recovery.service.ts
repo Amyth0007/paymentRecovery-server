@@ -185,7 +185,7 @@ export async function updateAssignmentStatus(
   meta: RequestMeta,
 ) {
   const assignmentFilter: QueryFilter = { _id: assignmentId, organizationId };
-  if (actor.role === "field_recovery") assignmentFilter.assigneeId = actor.userId;
+  if (actor.role === "field_recovery" || actor.role === "employee") assignmentFilter.assigneeId = actor.userId;
   const assignment = await RecoveryAssignmentModel.findOne(assignmentFilter);
   if (!assignment) {
     throw new AppError("NOT_FOUND", "Recovery assignment not found", 404);
@@ -248,6 +248,7 @@ export async function createVisit(
   const assignment = await RecoveryAssignmentModel.findOne({
     _id: assignmentId,
     organizationId,
+    ...((actor.role === "field_recovery" || actor.role === "employee") ? { assigneeId: actor.userId } : {}),
   });
   if (!assignment) {
     throw new AppError("NOT_FOUND", "Recovery assignment not found", 404);
@@ -302,7 +303,7 @@ export async function listAssignments(
   const filter: QueryFilter = { organizationId };
 
   // Field recovery employees see only assignments given to them
-  if (actor.role === "field_recovery") {
+  if (actor.role === "field_recovery" || actor.role === "employee") {
     filter.assigneeId = actor.userId;
   } else if (query.assigneeId) {
     filter.assigneeId = query.assigneeId;
@@ -349,7 +350,7 @@ export async function getAssignment(
   assignmentId: string,
 ) {
   const filter: QueryFilter = { _id: assignmentId, organizationId };
-  if (actor.role === "field_recovery") {
+  if (actor.role === "field_recovery" || actor.role === "employee") {
     filter.assigneeId = actor.userId;
   }
 
@@ -396,7 +397,7 @@ export async function createCallAttempt(
   meta: RequestMeta,
 ) {
   const filter: QueryFilter = { _id: assignmentId, organizationId };
-  if (actor.role === "field_recovery") filter.assigneeId = actor.userId;
+  if (actor.role === "field_recovery" || actor.role === "employee") filter.assigneeId = actor.userId;
   const assignment = await RecoveryAssignmentModel.findOne(filter);
   if (!assignment) throw new AppError("NOT_FOUND", "Assignment not found", 404);
   if (!assignment.invoiceIds.some((id) => id.toString() === invoiceId)) {
@@ -433,7 +434,7 @@ export async function createCallAttempt(
 
 export async function listVisits(actor: AuthContext, organizationId: string, assignmentId: string) {
   const assignmentFilter: QueryFilter = { _id: assignmentId, organizationId };
-  if (actor.role === "field_recovery") assignmentFilter.assigneeId = actor.userId;
+  if (actor.role === "field_recovery" || actor.role === "employee") assignmentFilter.assigneeId = actor.userId;
   const assignment = await RecoveryAssignmentModel.findOne(assignmentFilter).select("_id");
   if (!assignment) {
     throw new AppError("NOT_FOUND", "Recovery assignment not found", 404);

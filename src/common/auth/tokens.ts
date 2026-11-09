@@ -55,7 +55,8 @@ function isRole(value: unknown): value is Role {
     value === "super_admin" ||
     value === "org_admin" ||
     value === "accounts_manager" ||
-    value === "field_recovery"
+    value === "field_recovery" ||
+    value === "employee"
   );
 }
 

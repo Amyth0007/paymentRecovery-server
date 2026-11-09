@@ -3,6 +3,7 @@ import type { AuthConfig } from "../../common/auth/auth-context.js";
 import { sendSuccess } from "../../common/utils/api-response.js";
 import { updateOwnOrganizationSchema } from "../../common/validators/schemas.js";
 import { asyncHandler } from "../../common/middleware/async-handler.js";
+import { requireEnabledModule } from "../../common/middleware/module-guards.js";
 import {
   createRequireAuth,
   rejectMismatchedOrganization,
@@ -16,7 +17,7 @@ import { getOwnOrganization, updateOwnOrganization } from "./organization.servic
 export function createOrganizationRouter(config: AuthConfig) {
   const router = Router();
   const requireAuth = createRequireAuth(config);
-  router.use(requireAuth, requirePasswordChanged, requireTenant, rejectMismatchedOrganization);
+  router.use(requireAuth, requirePasswordChanged, requireTenant, requireEnabledModule("settings"), rejectMismatchedOrganization);
 
   router.get(
     "/",

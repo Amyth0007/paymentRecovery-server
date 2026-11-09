@@ -1,4 +1,4 @@
-import type { AuthConfig } from "../../common/auth/auth-context.js";
+import type { AuthConfig, Role } from "../../common/auth/auth-context.js";
 import { hashPassword, verifyPassword } from "../../common/auth/password.js";
 import { createRefreshTokenValue, hashRefreshToken, signAccessToken } from "../../common/auth/tokens.js";
 import { AppError } from "../../common/errors/app-error.js";
@@ -33,7 +33,7 @@ export async function revokeAllRefreshTokens(userId: string): Promise<void> {
 export async function accessTokenFor(
   user: {
     _id: { toString(): string };
-    role: "super_admin" | "org_admin" | "accounts_manager" | "field_recovery";
+    role: Role;
     organizationId?: { toString(): string } | null;
     tokenVersion: number;
   },

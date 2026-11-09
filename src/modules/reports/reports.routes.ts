@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { AuthConfig } from "../../common/auth/auth-context.js";
 import { asyncHandler } from "../../common/middleware/async-handler.js";
+import { requireEnabledModule } from "../../common/middleware/module-guards.js";
 import {
   createRequireAuth,
   rejectMismatchedOrganization,
@@ -19,11 +20,11 @@ export function createReportsRouter(config: AuthConfig) {
   const router = Router();
   const requireAuth = createRequireAuth(config);
 
-  router.use(requireAuth, requirePasswordChanged, requireTenant, rejectMismatchedOrganization);
+  router.use(requireAuth, requirePasswordChanged, requireTenant, requireEnabledModule("reports"), rejectMismatchedOrganization);
 
   router.get(
     "/dashboard",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "accounts_manager", "employee"),
     asyncHandler(async (req, res) => {
       sendSuccess(res, await getDashboardMetrics(req.auth!.organizationId!));
     }),
@@ -31,7 +32,7 @@ export function createReportsRouter(config: AuthConfig) {
 
   router.get(
     "/aging",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "accounts_manager", "employee"),
     asyncHandler(async (req, res) => {
       sendSuccess(res, await getAgingBuckets(req.auth!.organizationId!));
     }),
@@ -39,7 +40,7 @@ export function createReportsRouter(config: AuthConfig) {
 
   router.get(
     "/outstanding/customers",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "accounts_manager", "employee"),
     asyncHandler(async (req, res) => {
       sendSuccess(res, await getCustomerOutstandingReport(req.auth!.organizationId!));
     }),

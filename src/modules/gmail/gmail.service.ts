@@ -9,6 +9,7 @@ import { FileAssetModel } from "../files/file-asset.model.js";
 import { InvoiceModel } from "../invoices/invoice.model.js";
 import { UserModel } from "../users/user.model.js";
 import { assertTenantAccessible } from "../organizations/organization.service.js";
+import { assertModuleEnabled } from "../../common/middleware/module-guards.js";
 import { GmailConnectionModel } from "./gmail-connection.model.js";
 import { GmailEmailModel } from "./gmail-email.model.js";
 import { GmailOAuthStateModel } from "./gmail-oauth-state.model.js";
@@ -122,6 +123,7 @@ export async function completeGmailAuthorization(code: string, state: string) {
   const actor = await UserModel.findOne({ _id: stateRecord.userId, organizationId: stateRecord.organizationId, role: "org_admin", status: "active" });
   if (!actor) throw new AppError("FORBIDDEN", "The administrator who started Gmail authorization is no longer active", 403);
   await assertTenantAccessible(stateRecord.organizationId.toString());
+  await assertModuleEnabled(stateRecord.organizationId.toString(), "gmail");
   const token = await googleJson<{ access_token?: string; refresh_token?: string; scope?: string }>(GOOGLE_TOKEN, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },

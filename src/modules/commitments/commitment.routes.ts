@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { AuthConfig } from "../../common/auth/auth-context.js";
 import { asyncHandler } from "../../common/middleware/async-handler.js";
+import { requireEnabledModule } from "../../common/middleware/module-guards.js";
 import {
   createRequireAuth,
   rejectMismatchedOrganization,
@@ -29,11 +30,11 @@ export function createCommitmentRouter(config: AuthConfig) {
   const router = Router();
   const requireAuth = createRequireAuth(config);
 
-  router.use(requireAuth, requirePasswordChanged, requireTenant, rejectMismatchedOrganization);
+  router.use(requireAuth, requirePasswordChanged, requireTenant, requireEnabledModule("commitments"), rejectMismatchedOrganization);
 
   router.get(
     "/",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "accounts_manager", "employee"),
     asyncHandler(async (req, res) => {
       const query = commitmentListQuerySchema.parse(req.query);
       const result = await listCommitments(req.auth!.organizationId!, query);
@@ -43,7 +44,7 @@ export function createCommitmentRouter(config: AuthConfig) {
 
   router.post(
     "/",
-    requireRole("org_admin", "accounts_manager", "field_recovery"),
+    requireRole("org_admin", "accounts_manager", "field_recovery", "employee"),
     asyncHandler(async (req, res) => {
       const body = createCommitmentSchema.parse(req.body);
       const commitment = await createCommitment(
@@ -58,7 +59,7 @@ export function createCommitmentRouter(config: AuthConfig) {
 
   router.get(
     "/:id",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "accounts_manager", "employee"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(res, await getCommitment(req.auth!.organizationId!, id));

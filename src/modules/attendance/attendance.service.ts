@@ -7,6 +7,7 @@ import { recordAudit, type RequestMeta } from "../audit-logs/audit.service.js";
 import { FileAssetModel } from "../files/file-asset.model.js";
 import { UserModel } from "../users/user.model.js";
 import { AttendanceCorrectionModel } from "./attendance-correction.model.js";
+import { AttendanceAdjustmentModel } from "./attendance-adjustment.model.js";
 import { AttendancePolicyModel } from "./attendance-policy.model.js";
 import { AttendanceRecordModel } from "./attendance-record.model.js";
 import { OfficeLocationModel } from "./office-location.model.js";
@@ -29,6 +30,7 @@ type RecordQuery = z.infer<typeof attendanceListQuerySchema>;
 type CorrectionInput = z.infer<typeof correctionCreateSchema>;
 type CorrectionQuery = z.infer<typeof correctionListQuerySchema>;
 type CorrectionReview = z.infer<typeof correctionReviewSchema>;
+type AdjustmentInput = z.infer<typeof import("./attendance.schemas.js").attendanceAdjustmentSchema>;
 
 function dateForTimezone(date: Date, timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -61,6 +63,7 @@ function policyView(policy: {
   gpsAccuracyThresholdM: number;
   weeklyHolidays: number[];
   correctionRequestsEnabled: boolean;
+  locationVerificationRequired: boolean;
 }) {
   return {
     expectedCheckIn: policy.expectedCheckIn,
@@ -70,6 +73,7 @@ function policyView(policy: {
     gpsAccuracyThresholdM: policy.gpsAccuracyThresholdM,
     weeklyHolidays: policy.weeklyHolidays,
     correctionRequestsEnabled: policy.correctionRequestsEnabled,
+    locationVerificationRequired: policy.locationVerificationRequired,
   };
 }
 
@@ -117,13 +121,22 @@ export async function updateOfficeLocation(actor: AuthContext, organizationId: s
   return { id: location._id.toString(), ...input };
 }
 
+export async function deleteOfficeLocation(actor: AuthContext, organizationId: string, locationId: string, meta: RequestMeta) {
+  const location = await OfficeLocationModel.findOne({ _id: locationId, organizationId, status: "active" });
+  if (!location) throw new AppError("NOT_FOUND", "Active office location not found", 404);
+  location.status = "inactive";
+  await location.save();
+  await recordAudit({ actor, action: "attendance.office_deleted", entityType: "office_location", entityId: location._id.toString(), organizationId, before: { status: "active", name: location.name }, after: { status: "inactive" }, meta });
+  return { id: location._id.toString(), status: location.status };
+}
+
 type VerifiedPunch = {
   at: Date;
-  latitude: number;
-  longitude: number;
-  gpsAccuracyM: number;
-  officeDistanceM: number;
-  locationVerification: "verified";
+  latitude?: number | null;
+  longitude?: number | null;
+  gpsAccuracyM?: number | null;
+  officeDistanceM?: number | null;
+  locationVerification: "verified" | "not_enforced";
   photoAssetId: Types.ObjectId;
 };
 
@@ -133,17 +146,22 @@ async function validatePunch(
   input: PunchInput,
   officeLocationId: string,
   timestamp: Date,
-): Promise<{ office: NonNullable<Awaited<ReturnType<typeof OfficeLocationModel.findOne>>>; punch: VerifiedPunch }> {
+): Promise<{ office: Awaited<ReturnType<typeof OfficeLocationModel.findOne>>; punch: VerifiedPunch }> {
   const [office, policy, photo] = await Promise.all([
-    OfficeLocationModel.findOne({ _id: officeLocationId, organizationId, status: "active" }),
+    officeLocationId ? OfficeLocationModel.findOne({ _id: officeLocationId, organizationId, status: "active" }) : Promise.resolve(null),
     AttendancePolicyModel.findOne({ organizationId }),
     FileAssetModel.findOne({ _id: input.photoAssetId, organizationId, purpose: "attendance_photo", uploadedBy: actor.userId }),
   ]);
-  if (!office) throw new AppError("NOT_FOUND", "Active office location not found", 404);
   if (!photo) throw new AppError("NOT_FOUND", "Attendance photo not found for this employee", 404);
+  const strict = policy?.locationVerificationRequired !== false;
+  if (strict && !office) throw new AppError("NOT_FOUND", "Select an active office location", 404);
+  const hasLocation = input.latitude !== undefined && input.longitude !== undefined && input.gpsAccuracyM !== undefined;
+  if (strict && !hasLocation) throw new AppError("LOCATION_REQUIRED", "Device location is required by your organization", 422);
+  let distance: number | null = null;
+  if (strict && office && hasLocation) {
   const accuracyLimit = policy?.gpsAccuracyThresholdM ?? 50;
-  const distance = haversineMeters(input.latitude, input.longitude, office.latitude, office.longitude);
-  const geofenceResult = evaluateGeofence(distance, input.gpsAccuracyM, office.geofenceRadiusM, accuracyLimit);
+  distance = haversineMeters(input.latitude!, input.longitude!, office.latitude, office.longitude);
+  const geofenceResult = evaluateGeofence(distance, input.gpsAccuracyM!, office.geofenceRadiusM, accuracyLimit);
   if (geofenceResult === "low_accuracy") {
     throw new AppError("LOCATION_ACCURACY_LOW", `GPS accuracy is too low. Retry when it is ${accuracyLimit} meters or better.`, 422);
   }
@@ -151,35 +169,37 @@ async function validatePunch(
     throw new AppError("OUTSIDE_GEOFENCE", "You appear to be outside the selected office geofence", 422, { distanceM: Math.round(distance), radiusM: office.geofenceRadiusM });
   }
   if (geofenceResult === "ambiguous") {
-    throw new AppError("LOCATION_AMBIGUOUS", "GPS uncertainty overlaps the geofence boundary. Retry for a more accurate location or ask an administrator to review.", 422, { distanceM: Math.round(distance), accuracyM: Math.round(input.gpsAccuracyM), radiusM: office.geofenceRadiusM });
+    throw new AppError("LOCATION_AMBIGUOUS", "GPS uncertainty overlaps the geofence boundary. Retry for a more accurate location or ask an administrator to review.", 422, { distanceM: Math.round(distance), accuracyM: Math.round(input.gpsAccuracyM!), radiusM: office.geofenceRadiusM });
+  }
   }
   return {
     office,
     punch: {
       at: timestamp,
-      latitude: input.latitude,
-      longitude: input.longitude,
-      gpsAccuracyM: input.gpsAccuracyM,
-      officeDistanceM: Math.round(distance),
-      locationVerification: "verified",
+      latitude: hasLocation ? input.latitude! : null,
+      longitude: hasLocation ? input.longitude! : null,
+      gpsAccuracyM: hasLocation ? input.gpsAccuracyM! : null,
+      officeDistanceM: distance === null ? null : Math.round(distance),
+      locationVerification: strict ? "verified" : "not_enforced",
       photoAssetId: new Types.ObjectId(input.photoAssetId),
     },
   };
 }
 
-export async function checkIn(actor: AuthContext, organizationId: string, input: PunchInput & { officeLocationId: string }, meta: RequestMeta) {
+export async function checkIn(actor: AuthContext, organizationId: string, input: PunchInput & { officeLocationId?: string }, meta: RequestMeta) {
   const organization = await assertTenantAccessible(organizationId);
   const date = dateForTimezone(new Date(), organization.timezone);
   const existing = await AttendanceRecordModel.findOne({ organizationId, employeeId: actor.userId, attendanceDate: date });
   if (existing) throw new AppError("INVALID_STATE", existing.status === "checked_in" ? "You are already checked in" : "Attendance is already complete for today", 409);
   const timestamp = new Date();
-  const { office, punch } = await validatePunch(actor, organizationId, input, input.officeLocationId, timestamp);
+  if (await AttendanceAdjustmentModel.exists({ organizationId, employeeId: actor.userId, attendanceDate: date })) throw new AppError("INVALID_STATE", "An administrator has already set your attendance for today", 409);
+  const { office, punch } = await validatePunch(actor, organizationId, input, input.officeLocationId ?? "", timestamp);
   const policy = await AttendancePolicyModel.findOne({ organizationId });
   const [expectedHour, expectedMinute] = (policy?.expectedCheckIn ?? "09:00").split(":").map(Number);
   const lateArrival = minuteOfDay(timestamp, organization.timezone) > expectedHour * 60 + expectedMinute + (policy?.gracePeriodMinutes ?? 10);
   try {
-    const record = await AttendanceRecordModel.create({ organizationId, employeeId: actor.userId, attendanceDate: date, officeLocationId: office._id, checkIn: punch, status: "checked_in", lateArrival });
-    await recordAudit({ actor, action: "attendance.checked_in", entityType: "attendance", entityId: record._id.toString(), organizationId, after: { attendanceDate: date, officeLocationId: office._id.toString(), officeDistanceM: punch.officeDistanceM, gpsAccuracyM: punch.gpsAccuracyM, photoAssetId: punch.photoAssetId, lateArrival }, meta });
+    const record = await AttendanceRecordModel.create({ organizationId, employeeId: actor.userId, attendanceDate: date, officeLocationId: office?._id ?? null, checkIn: punch, status: "checked_in", lateArrival });
+    await recordAudit({ actor, action: "attendance.checked_in", entityType: "attendance", entityId: record._id.toString(), organizationId, after: { attendanceDate: date, officeLocationId: office?._id.toString() ?? null, officeDistanceM: punch.officeDistanceM, gpsAccuracyM: punch.gpsAccuracyM, photoAssetId: punch.photoAssetId, lateArrival }, meta });
     return presentRecord(record);
   } catch (error) {
     if (isDuplicateKey(error)) throw new AppError("INVALID_STATE", "Attendance is already recorded for today", 409);
@@ -190,11 +210,12 @@ export async function checkIn(actor: AuthContext, organizationId: string, input:
 export async function checkOut(actor: AuthContext, organizationId: string, input: PunchInput, meta: RequestMeta) {
   const organization = await assertTenantAccessible(organizationId);
   const date = dateForTimezone(new Date(), organization.timezone);
+  if (await AttendanceAdjustmentModel.exists({ organizationId, employeeId: actor.userId, attendanceDate: date })) throw new AppError("INVALID_STATE", "An administrator has already set your attendance for today", 409);
   const record = await AttendanceRecordModel.findOne({ organizationId, employeeId: actor.userId, attendanceDate: date, status: "checked_in" });
   if (!record || !record.checkIn) throw new AppError("INVALID_STATE", "You do not have an open check-in for today", 409);
   const timestamp = new Date();
   if (timestamp <= record.checkIn.at) throw new AppError("INVALID_STATE", "Check-out time must be after check-in", 422);
-  const { punch } = await validatePunch(actor, organizationId, input, record.officeLocationId.toString(), timestamp);
+  const { punch } = await validatePunch(actor, organizationId, input, record.officeLocationId?.toString() ?? "", timestamp);
   const policy = await AttendancePolicyModel.findOne({ organizationId });
   record.checkOut = punch;
   record.status = "completed";
@@ -209,7 +230,7 @@ function presentRecord(record: {
   _id: { toString(): string };
   employeeId: { toString(): string };
   attendanceDate: string;
-  officeLocationId: { toString(): string };
+  officeLocationId?: { toString(): string } | null;
   checkIn?: VerifiedPunch | null;
   checkOut?: VerifiedPunch | null;
   correctedCheckOutAt?: Date | null;
@@ -221,7 +242,7 @@ function presentRecord(record: {
 }) {
   return {
     id: record._id.toString(), employeeId: record.employeeId.toString(), attendanceDate: record.attendanceDate,
-    officeLocationId: record.officeLocationId.toString(), checkIn: record.checkIn ?? null,
+    officeLocationId: record.officeLocationId?.toString() ?? null, checkIn: record.checkIn ?? null,
     checkOut: record.checkOut ?? null, correctedCheckOutAt: record.correctedCheckOutAt ?? null,
     correctionId: record.correctionId?.toString() ?? null, status: record.status,
     lateArrival: record.lateArrival, totalWorkingMinutes: record.totalWorkingMinutes ?? null, halfDay: record.halfDay,
@@ -233,15 +254,24 @@ export async function listAttendanceRecords(actor: AuthContext, organizationId: 
   const employeeId = isAdmin ? (query.employeeId ?? undefined) : actor.userId;
   const filter: Record<string, unknown> = { organizationId, ...(employeeId ? { employeeId } : {}) };
   if (query.from || query.to) filter.attendanceDate = { ...(query.from ? { $gte: query.from } : {}), ...(query.to ? { $lte: query.to } : {}) };
-  if (query.officeLocationId) filter.officeLocationId = query.officeLocationId;
-  if (query.status) filter.status = query.status;
-  const skip = (query.page - 1) * query.limit;
-  const [records, total] = await Promise.all([
-    AttendanceRecordModel.find(filter).sort({ attendanceDate: -1, createdAt: -1 }).skip(skip).limit(query.limit),
-    AttendanceRecordModel.countDocuments(filter),
+  const [records, adjustments] = await Promise.all([
+    AttendanceRecordModel.find(filter).sort({ attendanceDate: -1, createdAt: -1 }),
+    AttendanceAdjustmentModel.find({ organizationId, ...(employeeId ? { employeeId } : {}), ...(filter.attendanceDate ? { attendanceDate: filter.attendanceDate } : {}) }),
   ]);
-  const employeeIds = [...new Set(records.map((record) => record.employeeId.toString()))];
-  const officeIds = [...new Set(records.map((record) => record.officeLocationId.toString()))];
+  const adjustmentMap = new Map(adjustments.map((item) => [`${item.employeeId.toString()}:${item.attendanceDate}`, item]));
+  const recordKeys = new Set(records.map((item) => `${item.employeeId.toString()}:${item.attendanceDate}`));
+  const combined: Array<Record<string, any>> = records.map((record) => {
+    const base = presentRecord(record);
+    const adjustment = adjustmentMap.get(`${record.employeeId.toString()}:${record.attendanceDate}`);
+    return adjustment ? { ...base, status: adjustment.status, manualAdjustment: { id: adjustment._id.toString(), reason: adjustment.reason, checkInAt: adjustment.checkInAt, checkOutAt: adjustment.checkOutAt, adjustedBy: adjustment.adjustedBy.toString() }, checkIn: adjustment.status === "present" && adjustment.checkInAt ? { ...(base.checkIn ?? {}), at: adjustment.checkInAt, photoAssetId: base.checkIn?.photoAssetId ?? null, manuallyEntered: true } : base.checkIn, checkOut: adjustment.status === "present" && adjustment.checkOutAt ? { ...(base.checkOut ?? {}), at: adjustment.checkOutAt, photoAssetId: base.checkOut?.photoAssetId ?? null, manuallyEntered: true } : base.checkOut } : base;
+  });
+  for (const adjustment of adjustments) if (!recordKeys.has(`${adjustment.employeeId.toString()}:${adjustment.attendanceDate}`)) combined.push({ id: `adjustment-${adjustment._id}`, employeeId: adjustment.employeeId.toString(), attendanceDate: adjustment.attendanceDate, officeLocationId: null, checkIn: adjustment.status === "present" && adjustment.checkInAt ? { at: adjustment.checkInAt, photoAssetId: null, manuallyEntered: true } : null, checkOut: adjustment.status === "present" && adjustment.checkOutAt ? { at: adjustment.checkOutAt, photoAssetId: null, manuallyEntered: true } : null, status: adjustment.status, lateArrival: false, totalWorkingMinutes: adjustment.checkInAt && adjustment.checkOutAt ? Math.floor((adjustment.checkOutAt.getTime() - adjustment.checkInAt.getTime()) / 60_000) : null, halfDay: false, manualAdjustment: { id: adjustment._id.toString(), reason: adjustment.reason, checkInAt: adjustment.checkInAt, checkOutAt: adjustment.checkOutAt, adjustedBy: adjustment.adjustedBy.toString() } });
+  const filtered = combined.filter((record) => (!query.officeLocationId || record.officeLocationId === query.officeLocationId) && (!query.status || record.status === query.status || (query.status === "present" && record.status === "completed") || (query.status === "completed" && record.status === "present"))).sort((a, b) => b.attendanceDate.localeCompare(a.attendanceDate));
+  const total = filtered.length;
+  const skip = (query.page - 1) * query.limit;
+  const pageItems = filtered.slice(skip, skip + query.limit);
+  const employeeIds = [...new Set(pageItems.map((record) => record.employeeId))];
+  const officeIds = [...new Set(pageItems.map((record) => record.officeLocationId).filter(Boolean))];
   const [employees, offices] = await Promise.all([
     UserModel.find({ _id: { $in: employeeIds }, organizationId }).select("name email"),
     OfficeLocationModel.find({ _id: { $in: officeIds }, organizationId }).select("name"),
@@ -249,7 +279,7 @@ export async function listAttendanceRecords(actor: AuthContext, organizationId: 
   const employeeNames = new Map(employees.map((employee) => [employee._id.toString(), { name: employee.name, email: employee.email }]));
   const officeNames = new Map(offices.map((office) => [office._id.toString(), office.name]));
   return {
-    items: records.map((record) => ({ ...presentRecord(record), employee: employeeNames.get(record.employeeId.toString()) ?? null, officeName: officeNames.get(record.officeLocationId.toString()) ?? "Office" })),
+    items: pageItems.map((record) => ({ ...record, employee: employeeNames.get(record.employeeId) ?? null, officeName: record.officeLocationId ? officeNames.get(record.officeLocationId) ?? "Office" : "—" })),
     meta: { page: query.page, limit: query.limit, total },
   };
 }
@@ -261,21 +291,49 @@ export async function attendanceDashboard(organizationId: string, date?: string)
   const policy = await AttendancePolicyModel.findOne({ organizationId });
   const holiday = policy?.weeklyHolidays.includes(weekday) ?? weekday === 0;
   const [totalEmployees, records, pendingCorrections] = await Promise.all([
-    UserModel.countDocuments({ organizationId, status: "active", role: { $in: ["org_admin", "accounts_manager", "field_recovery"] } }),
+    UserModel.countDocuments({ organizationId, status: "active", role: { $in: ["org_admin", "accounts_manager", "field_recovery", "employee"] } }),
     AttendanceRecordModel.find({ organizationId, attendanceDate }),
     AttendanceCorrectionModel.countDocuments({ organizationId, status: "pending" }),
   ]);
-  const present = records.length;
+  const adjustments = await AttendanceAdjustmentModel.find({ organizationId, attendanceDate });
+  const adjusted = new Map(adjustments.map((item) => [item.employeeId.toString(), item]));
+  const present = new Set(records.map((record) => record.employeeId.toString()).filter((id) => adjusted.get(id)?.status !== "absent" && adjusted.get(id)?.status !== "leave"));
+  for (const item of adjustments) if (item.status === "present") present.add(item.employeeId.toString());
+  const onLeave = adjustments.filter((item) => item.status === "leave").length;
   return {
     date: attendanceDate,
     totalEmployees,
-    presentToday: present,
-    absentToday: holiday ? 0 : Math.max(0, totalEmployees - present),
+    presentToday: present.size,
+    onLeaveToday: onLeave,
+    absentToday: holiday ? 0 : Math.max(0, totalEmployees - present.size - onLeave),
     lateArrivals: records.filter((record) => record.lateArrival).length,
     currentlyCheckedIn: records.filter((record) => record.status === "checked_in").length,
     exceptions: pendingCorrections,
     holiday,
   };
+}
+
+export async function upsertAttendanceAdjustment(actor: AuthContext, organizationId: string, input: AdjustmentInput, meta: RequestMeta) {
+  const organization = await assertTenantAccessible(organizationId);
+  if (input.attendanceDate > dateForTimezone(new Date(), organization.timezone)) throw new AppError("VALIDATION_ERROR", "Attendance cannot be set for a future date", 422);
+  const employee = await UserModel.findOne({ _id: input.employeeId, organizationId, status: "active", role: { $in: ["employee", "field_recovery", "accounts_manager", "org_admin"] } });
+  if (!employee) throw new AppError("NOT_FOUND", "Active organization employee not found", 404);
+  const checkInAt = input.checkInAt ? new Date(input.checkInAt) : null;
+  const checkOutAt = input.checkOutAt ? new Date(input.checkOutAt) : null;
+  if (input.status === "present") {
+    if (!checkInAt || checkInAt > new Date()) throw new AppError("VALIDATION_ERROR", "Present attendance requires a check-in time that is not in the future", 422);
+    if (checkOutAt && (checkOutAt <= checkInAt || checkOutAt > new Date())) throw new AppError("VALIDATION_ERROR", "Check-out must be after check-in and not in the future", 422);
+  } else if (checkInAt || checkOutAt) throw new AppError("VALIDATION_ERROR", "Check-in/out times apply only to present attendance", 422);
+
+  const after = { status: input.status, checkInAt, checkOutAt, reason: input.reason };
+  let adjustment = await AttendanceAdjustmentModel.findOne({ organizationId, employeeId: employee._id, attendanceDate: input.attendanceDate });
+  const before = adjustment ? { status: adjustment.status, checkInAt: adjustment.checkInAt, checkOutAt: adjustment.checkOutAt, reason: adjustment.reason } : null;
+  if (!adjustment) adjustment = new AttendanceAdjustmentModel({ organizationId, employeeId: employee._id, attendanceDate: input.attendanceDate, adjustedBy: actor.userId, history: [] });
+  Object.assign(adjustment, after, { adjustedBy: actor.userId });
+  adjustment.history.push({ before, after, actorId: actor.userId, at: new Date() });
+  await adjustment.save();
+  await recordAudit({ actor, action: "attendance.manually_adjusted", entityType: "attendance_adjustment", entityId: adjustment._id.toString(), organizationId, before, after: { ...after, employeeId: employee._id.toString(), attendanceDate: input.attendanceDate }, reason: input.reason, meta });
+  return { id: adjustment._id.toString(), employeeId: employee._id.toString(), employee: { name: employee.name, email: employee.email }, attendanceDate: adjustment.attendanceDate, ...after, adjustedBy: actor.userId };
 }
 
 export async function createCorrectionRequest(actor: AuthContext, organizationId: string, input: CorrectionInput, meta: RequestMeta) {

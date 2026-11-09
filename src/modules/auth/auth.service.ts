@@ -1,4 +1,4 @@
-import type { AuthConfig, AuthContext } from "../../common/auth/auth-context.js";
+import type { AuthConfig, AuthContext, Role } from "../../common/auth/auth-context.js";
 import { AppError } from "../../common/errors/app-error.js";
 import type { loginSchema } from "../../common/validators/schemas.js";
 import type { z } from "zod";
@@ -22,7 +22,7 @@ const invalidCredentials = new AppError("UNAUTHORIZED", "Invalid email or passwo
 async function sessionFor(
   user: {
     _id: { toString(): string };
-    role: "super_admin" | "org_admin" | "accounts_manager" | "field_recovery";
+    role: Role;
     organizationId?: { toString(): string } | null;
     tokenVersion: number;
   },

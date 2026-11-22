@@ -101,6 +101,7 @@ export async function presentOrganization(organizationId: string) {
     id: organization._id.toString(),
     name: organization.name,
     legalName: organization.legalName,
+    address: organization.address,
     gstin: organization.gstin,
     timezone: organization.timezone,
     currency: organization.currency,
@@ -339,6 +340,7 @@ export async function updateOwnOrganization(
   if (input.legalName !== undefined) {
     organization.legalName = input.legalName;
   }
+  if (input.address !== undefined) organization.address = input.address;
   if (input.gstin !== undefined) {
     organization.gstin = input.gstin;
   }

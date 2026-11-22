@@ -9,6 +9,11 @@ import { OrganizationModel } from "../organizations/organization.model.js";
 import { isModuleEnabled, MODULES, type ModuleKey } from "../organizations/module-registry.js";
 import { revokeAllRefreshTokens } from "../auth/refresh-token.service.js";
 import { UserModel } from "./user.model.js";
+import { ACTION_PERMISSIONS, type ActionPermissionKey } from "./permission-registry.js";
+import { effectiveUserAccess } from "./user-access.service.js";
+import { getAssignableCustomRole } from "./custom-role.service.js";
+import { DepartmentModel } from "../workforce/department.model.js";
+import { OfficeLocationModel } from "../attendance/office-location.model.js";
 
 type CreateEmployeeInput = z.infer<typeof createEmployeeSchema>;
 type UpdateEmployeeInput = z.infer<typeof updateEmployeeSchema>;
@@ -33,7 +38,13 @@ export function presentUser(user: {
   mustChangePassword: boolean;
   modulePermissions?: Map<string, boolean> | Record<string, boolean> | null;
   modulePermissionsConfigured?: boolean;
+  actionPermissions?: string[];
+  workforceScope?: { mode: "organization" | "selected"; departmentIds: Array<{ toString(): string }>; locationIds: Array<{ toString(): string }> } | null;
+  customRoleId?: { toString(): string; _id?: unknown; name?: string; modulePermissions?: string[]; actionPermissions?: string[]; status?: string } | string | null;
 }) {
+  const populatedCustomRole = user.customRoleId && typeof user.customRoleId === "object" && "name" in user.customRoleId ? user.customRoleId : null;
+  const roleModulePermissions = populatedCustomRole?.status === "active" ? populatedCustomRole.modulePermissions ?? [] : [];
+  const roleActionPermissions = populatedCustomRole?.status === "active" ? populatedCustomRole.actionPermissions ?? [] : [];
   return {
     id: user._id.toString(),
     email: user.email,
@@ -42,8 +53,12 @@ export function presentUser(user: {
     status: user.status,
     organizationId: user.organizationId ? user.organizationId.toString() : null,
     mustChangePassword: user.mustChangePassword,
-    modulePermissions: user.modulePermissions instanceof Map ? Object.fromEntries(user.modulePermissions) : user.modulePermissions ?? {},
-    modulePermissionsConfigured: user.modulePermissionsConfigured ?? false,
+    modulePermissions: populatedCustomRole ? Object.fromEntries(roleModulePermissions.map((module) => [module, true])) : user.modulePermissions instanceof Map ? Object.fromEntries(user.modulePermissions) : user.modulePermissions ?? {},
+    modulePermissionsConfigured: populatedCustomRole ? true : user.modulePermissionsConfigured ?? false,
+    actionPermissions: populatedCustomRole ? roleActionPermissions : user.actionPermissions ?? [],
+    customRoleId: user.customRoleId ? (populatedCustomRole && "_id" in populatedCustomRole ? String(populatedCustomRole._id) : user.customRoleId.toString()) : null,
+    customRoleName: populatedCustomRole?.name ?? null,
+    workforceScope: user.workforceScope ? { mode: user.workforceScope.mode, departmentIds: user.workforceScope.departmentIds.map((id) => id.toString()), locationIds: user.workforceScope.locationIds.map((id) => id.toString()) } : { mode: "organization", departmentIds: [], locationIds: [] },
   };
 }
 
@@ -55,12 +70,16 @@ export async function presentSessionUser(userId: string) {
   const organization = user.organizationId
     ? await OrganizationModel.findById(user.organizationId)
     : null;
+  const effectiveAccess = user.customRoleId ? await effectiveUserAccess(userId) : null;
   return {
     ...presentUser(user),
+    ...(effectiveAccess ? { modulePermissions: Object.fromEntries(effectiveAccess.modules.map((module) => [module, true])), modulePermissionsConfigured: true, actionPermissions: effectiveAccess.actions, customRoleName: effectiveAccess.customRoleName } : {}),
     organization: organization
       ? {
           id: organization._id.toString(),
           name: organization.name,
+          legalName: organization.legalName,
+          address: organization.address,
           status: organization.status,
           timezone: organization.timezone,
           currency: organization.currency,
@@ -78,7 +97,20 @@ export async function createEmployee(
 ) {
   try {
     const organization = await OrganizationModel.findById(organizationId);
-    if (input.role !== "org_admin" && input.modulePermissions?.some((key) => !isModuleEnabled(organization?.modules, key))) throw new AppError("VALIDATION_ERROR", "Staff can only be granted screens enabled for this organization", 422);
+    const customRole = input.customRoleId ? await getAssignableCustomRole(organizationId, input.customRoleId) : null;
+    const modulePermissions = customRole?.modulePermissions ?? input.modulePermissions ?? [];
+    const actionPermissions = customRole?.actionPermissions ?? input.actionPermissions ?? [];
+    if (input.role === "sub_admin" && modulePermissions.includes("settings")) throw new AppError("VALIDATION_ERROR", "Subadmins cannot be granted organization settings or team administration", 422);
+    if (input.role !== "sub_admin" && input.actionPermissions?.length) throw new AppError("VALIDATION_ERROR", "Action permissions are only configurable for subadmins", 422);
+    if (!customRole && input.actionPermissions?.some((key) => !modulePermissions.includes(ACTION_PERMISSIONS.find((permission) => permission.key === key)?.module as ModuleKey))) throw new AppError("VALIDATION_ERROR", "Action permissions require access to their parent module", 422);
+    if (input.role !== "org_admin" && modulePermissions.some((key) => !isModuleEnabled(organization?.modules, key as ModuleKey))) throw new AppError("VALIDATION_ERROR", "Staff can only be granted screens enabled for this organization", 422);
+    if (input.workforceScope?.mode === "selected") {
+      const [departments, locations] = await Promise.all([
+        DepartmentModel.countDocuments({ organizationId, _id: { $in: input.workforceScope.departmentIds } }),
+        OfficeLocationModel.countDocuments({ organizationId, _id: { $in: input.workforceScope.locationIds } }),
+      ]);
+      if (departments !== input.workforceScope.departmentIds.length || locations !== input.workforceScope.locationIds.length) throw new AppError("VALIDATION_ERROR", "Every scoped department and location must belong to this organization", 422);
+    }
     const passwordHash = await hashPassword(input.temporaryPassword);
     const user = await UserModel.create({
       organizationId,
@@ -86,8 +118,11 @@ export async function createEmployee(
       name: input.name,
       passwordHash,
       role: input.role,
-      modulePermissions: input.role !== "org_admin" ? new Map((input.modulePermissions ?? []).map((key) => [key, true])) : new Map(),
-      modulePermissionsConfigured: input.role !== "org_admin" && input.modulePermissions !== undefined,
+      modulePermissions: input.role !== "org_admin" ? new Map(modulePermissions.map((key) => [key, true])) : new Map(),
+      modulePermissionsConfigured: input.role !== "org_admin" && (input.modulePermissions !== undefined || Boolean(customRole)),
+      actionPermissions: input.role === "sub_admin" ? actionPermissions : [],
+      customRoleId: customRole?._id ?? null,
+      workforceScope: input.role === "sub_admin" ? input.workforceScope ?? { mode: "organization", departmentIds: [], locationIds: [] } : undefined,
       status: "active",
       mustChangePassword: false,
       tokenVersion: 0,
@@ -98,10 +133,10 @@ export async function createEmployee(
       entityType: "user",
       entityId: user._id.toString(),
       organizationId,
-      after: { email: user.email, role: user.role },
+      after: { email: user.email, role: user.role, customRoleId: customRole?._id.toString() ?? null, customRoleName: customRole?.name ?? null, modulePermissions: Object.fromEntries(user.modulePermissions ?? new Map()), actionPermissions: user.actionPermissions ?? [] },
       meta,
     });
-    return presentUser(user);
+    return { ...presentUser(user), customRoleName: customRole?.name ?? null };
   } catch (error) {
     if (isDuplicateKey(error)) {
       throw new AppError("CONFLICT", "A user with this email already exists", 409);
@@ -117,7 +152,7 @@ export async function listEmployees(organizationId: string, query: ListQuery) {
   }
   const skip = (query.page - 1) * query.limit;
   const [users, total] = await Promise.all([
-    UserModel.find(filter).sort(userSorts[query.sort]).skip(skip).limit(query.limit),
+    UserModel.find(filter).populate("customRoleId", "name modulePermissions actionPermissions status").sort(userSorts[query.sort]).skip(skip).limit(query.limit),
     UserModel.countDocuments(filter),
   ]);
   return {
@@ -152,9 +187,22 @@ export async function updateEmployee(
     }
   }
 
-  const before = { role: user.role, status: user.status, modulePermissions: Object.fromEntries(user.modulePermissions ?? new Map()), modulePermissionsConfigured: user.modulePermissionsConfigured };
+  const before = { role: user.role, status: user.status, workforceScope: user.workforceScope, customRoleId: user.customRoleId?.toString() ?? null, modulePermissions: Object.fromEntries(user.modulePermissions ?? new Map()), modulePermissionsConfigured: user.modulePermissionsConfigured, actionPermissions: user.actionPermissions ?? [] };
+  if (input.workforceScope !== undefined) {
+    if (nextRole !== "sub_admin") throw new AppError("VALIDATION_ERROR", "Data scopes can only be assigned to subadmins", 422);
+    if (input.workforceScope.mode === "selected") {
+      const [departments, locations] = await Promise.all([
+        DepartmentModel.countDocuments({ organizationId, _id: { $in: input.workforceScope.departmentIds } }),
+        OfficeLocationModel.countDocuments({ organizationId, _id: { $in: input.workforceScope.locationIds } }),
+      ]);
+      if (departments !== input.workforceScope.departmentIds.length || locations !== input.workforceScope.locationIds.length) throw new AppError("VALIDATION_ERROR", "Every scoped department and location must belong to this organization", 422);
+    }
+    user.workforceScope = input.workforceScope as never;
+  }
   if (input.role) {
     user.role = input.role;
+    if (input.role !== "sub_admin") user.workforceScope = undefined as never;
+    else if (!user.workforceScope) user.workforceScope = { mode: "organization", departmentIds: [], locationIds: [] } as never;
   }
   if (input.status) {
     user.status = input.status;
@@ -163,12 +211,40 @@ export async function updateEmployee(
     user.modulePermissions = new Map();
     user.modulePermissionsConfigured = false;
   }
+  if (input.role === "sub_admin") {
+    user.modulePermissions.delete("settings");
+  }
+  if (input.role && input.role !== "sub_admin") user.actionPermissions = [];
+  if (input.role && input.role !== "sub_admin") user.customRoleId = null;
+  let customRoleName: string | null = null;
+  if (input.customRoleId !== undefined) {
+    if (input.customRoleId === null) user.customRoleId = null;
+    else {
+      if (user.role !== "sub_admin") throw new AppError("VALIDATION_ERROR", "Custom roles can only be assigned to subadmins", 422);
+      const role = await getAssignableCustomRole(organizationId, input.customRoleId);
+      user.customRoleId = role._id;
+      user.modulePermissions = new Map(role.modulePermissions.map((key) => [key, true]));
+      user.modulePermissionsConfigured = true;
+      user.actionPermissions = role.actionPermissions as ActionPermissionKey[];
+      customRoleName = role.name;
+    }
+  }
+  if (input.modulePermissions !== undefined || input.actionPermissions !== undefined) user.customRoleId = null;
   if (input.modulePermissions !== undefined) {
     const organization = await OrganizationModel.findById(organizationId);
     if (user.role === "org_admin") throw new AppError("VALIDATION_ERROR", "Organization administrators have full module access", 422);
+    if (user.role === "sub_admin" && input.modulePermissions.includes("settings")) throw new AppError("VALIDATION_ERROR", "Subadmins cannot be granted organization settings or team administration", 422);
     if (input.modulePermissions.some((key) => !isModuleEnabled(organization?.modules, key))) throw new AppError("VALIDATION_ERROR", "Staff can only be granted screens enabled for this organization", 422);
     user.modulePermissions = new Map(input.modulePermissions.map((key) => [key, true]));
     user.modulePermissionsConfigured = true;
+    const grantedModules = new Set<string>(input.modulePermissions);
+    user.actionPermissions = (user.actionPermissions ?? []).filter((key) => grantedModules.has(ACTION_PERMISSIONS.find((permission) => permission.key === key)?.module ?? ""));
+  }
+  if (input.actionPermissions !== undefined) {
+    if (user.role !== "sub_admin") throw new AppError("VALIDATION_ERROR", "Action permissions are only configurable for subadmins", 422);
+    const grantedModules = new Set<string>(input.modulePermissions ?? [...(user.modulePermissions ?? new Map()).keys()]);
+    if (input.actionPermissions.some((key) => !grantedModules.has(ACTION_PERMISSIONS.find((permission) => permission.key === key)!.module))) throw new AppError("VALIDATION_ERROR", "Action permissions require access to their parent module", 422);
+    user.actionPermissions = input.actionPermissions as ActionPermissionKey[];
   }
   if (input.temporaryPassword) {
     user.passwordHash = await hashPassword(input.temporaryPassword);
@@ -180,6 +256,7 @@ export async function updateEmployee(
     user.tokenVersion += 1;
     await revokeAllRefreshTokens(user._id.toString());
   }
+  const accessRole = user.customRoleId ? await getAssignableCustomRole(organizationId, user.customRoleId.toString()).catch(() => null) : null;
   await user.save();
   await recordAudit({
     actor,
@@ -188,10 +265,10 @@ export async function updateEmployee(
     entityId: user._id.toString(),
     organizationId,
     before,
-    after: { role: user.role, status: user.status, modulePermissions: Object.fromEntries(user.modulePermissions ?? new Map()), modulePermissionsConfigured: user.modulePermissionsConfigured, passwordReset: Boolean(input.temporaryPassword) },
+    after: { role: user.role, status: user.status, customRoleId: user.customRoleId?.toString() ?? null, customRoleName: customRoleName ?? accessRole?.name ?? null, modulePermissions: Object.fromEntries(user.modulePermissions ?? new Map()), modulePermissionsConfigured: user.modulePermissionsConfigured, actionPermissions: user.actionPermissions ?? [], passwordReset: Boolean(input.temporaryPassword) },
     meta,
   });
-  return presentUser(user);
+  return { ...presentUser(user), customRoleName: customRoleName ?? accessRole?.name ?? null };
 }
 
 export function isTenantRole(role: string): role is TenantRole {

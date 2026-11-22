@@ -23,6 +23,14 @@ import { createReportsRouter } from "./modules/reports/reports.routes.js";
 import { createUserRouter } from "./modules/users/user.routes.js";
 import { createGmailRouter } from "./modules/gmail/gmail.routes.js";
 import { createAttendanceRouter } from "./modules/attendance/attendance.routes.js";
+import { createWorkforceRouter } from "./modules/workforce/workforce.routes.js";
+import { createPayrollRouter } from "./modules/workforce/payroll.routes.js";
+import { createOvertimeRouter } from "./modules/workforce/overtime.routes.js";
+import { createSelfPayrollRouter } from "./modules/workforce/self-payroll.routes.js";
+import { createLeaveRouter } from "./modules/workforce/leave.routes.js";
+import { createWorkforceReportsRouter } from "./modules/workforce/workforce-reports.routes.js";
+import { createComplianceRouter } from "./modules/workforce/compliance.routes.js";
+import { createCompliancePlatformRouter } from "./modules/workforce/compliance-platform.routes.js";
 import "./types/express.js";
 
 export type AppDependencies = {
@@ -76,6 +84,14 @@ export function createApp(dependencies: AppDependencies) {
   app.use("/api/v1/reports", createReportsRouter(dependencies.authConfig));
   app.use("/api/v1/gmail", createGmailRouter(dependencies.authConfig));
   app.use("/api/v1/attendance", createAttendanceRouter(dependencies.authConfig));
+  app.use("/api/v1/workforce", createWorkforceRouter(dependencies.authConfig));
+  app.use("/api/v1/payroll", createPayrollRouter(dependencies.authConfig));
+  app.use("/api/v1/overtime", createOvertimeRouter(dependencies.authConfig));
+  app.use("/api/v1/my-payroll", createSelfPayrollRouter(dependencies.authConfig));
+  app.use("/api/v1/leave", createLeaveRouter(dependencies.authConfig));
+  app.use("/api/v1/workforce-reports", createWorkforceReportsRouter(dependencies.authConfig));
+  app.use("/api/v1/compliance", createComplianceRouter(dependencies.authConfig));
+  app.use("/api/v1/platform/compliance", createCompliancePlatformRouter(dependencies.authConfig));
   app.use(notFoundHandler);
   app.use(createErrorHandler(dependencies.logger));
 

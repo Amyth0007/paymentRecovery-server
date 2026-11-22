@@ -36,7 +36,7 @@ export const attendanceListQuerySchema = z.object({
   to: dateSchema.optional(),
   employeeId: objectIdSchema.optional(),
   officeLocationId: objectIdSchema.optional(),
-  status: z.enum(["checked_in", "completed", "present", "absent", "leave"]).optional(),
+  status: z.enum(["checked_in", "completed", "present", "half_day", "absent", "leave"]).optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(30),
 });
@@ -44,11 +44,14 @@ export const attendanceListQuerySchema = z.object({
 export const attendanceAdjustmentSchema = z.object({
   employeeId: objectIdSchema,
   attendanceDate: dateSchema,
-  status: z.enum(["present", "absent", "leave"]),
+  status: z.enum(["present", "half_day", "absent", "leave"]),
   checkInAt: z.iso.datetime({ offset: true }).optional(),
   checkOutAt: z.iso.datetime({ offset: true }).optional(),
   reason: z.string().trim().min(3).max(1000),
+  photoAssetId: objectIdSchema.optional(),
 }).refine((value) => value.status !== "present" || Boolean(value.checkInAt), { message: "A check-in time is required for present attendance", path: ["checkInAt"] });
+
+export const guardPunchSchema = attendancePunchSchema.extend({ employeeId: objectIdSchema, action: z.enum(["check_in", "check_out"]), officeLocationId: objectIdSchema.optional() });
 
 export const correctionCreateSchema = z.object({
   attendanceRecordId: objectIdSchema,

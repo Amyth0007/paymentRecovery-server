@@ -16,6 +16,7 @@ import { getFileAsset, saveUploadedFile } from "./files.service.js";
 import { assertModuleAccess } from "../../common/middleware/module-guards.js";
 import type { ModuleKey } from "../organizations/module-registry.js";
 import type { Purpose } from "./files.service.js";
+import { effectiveUserAccess } from "../users/user-access.service.js";
 
 const PURPOSE_MODULE: Partial<Record<Purpose, ModuleKey>> = {
   invoice_document: "invoices",
@@ -79,7 +80,9 @@ export function createFilesRouter(config: AuthConfig) {
       const requiredModule = PURPOSE_MODULE[fileAsset.purpose];
       if (requiredModule) await assertModuleAccess(req.auth!.organizationId!, requiredModule, req.auth);
       if (attendanceFile && fileAsset.uploadedBy.toString() !== req.auth!.userId && req.auth!.role !== "org_admin") {
-        throw new AppError("FORBIDDEN", "Attendance photos are only available to the employee and organization administrators", 403);
+        const access = req.auth!.role === "sub_admin" ? await effectiveUserAccess(req.auth!.userId) : null;
+        const canReviewEvidence = access?.actions.some((permission) => ["attendance.view_all", "attendance.adjust", "attendance.review_corrections"].includes(permission)) ?? false;
+        if (!canReviewEvidence) throw new AppError("FORBIDDEN", "Attendance photos are only available to the employee and authorized attendance reviewers", 403);
       }
       if (attendanceFile) {
         res.setHeader("Content-Disposition", "inline");

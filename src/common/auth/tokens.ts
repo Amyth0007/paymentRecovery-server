@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import jwt, { type JwtPayload } from "jsonwebtoken";
-import type { AuthConfig, Role } from "./auth-context.js";
+import { ROLES, type AuthConfig, type Role } from "./auth-context.js";
 
 export type AccessClaims = {
   sub: string;
@@ -51,13 +51,7 @@ function parseClaims(decoded: JwtPayload): AccessClaims {
 }
 
 function isRole(value: unknown): value is Role {
-  return (
-    value === "super_admin" ||
-    value === "org_admin" ||
-    value === "accounts_manager" ||
-    value === "field_recovery" ||
-    value === "employee"
-  );
+  return typeof value === "string" && (ROLES as readonly string[]).includes(value);
 }
 
 export function createRefreshTokenValue(): { raw: string; tokenHash: string; familyId: string } {

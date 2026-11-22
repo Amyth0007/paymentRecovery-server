@@ -7,6 +7,7 @@ import {
   rejectMismatchedOrganization,
   requirePasswordChanged,
   requireRole,
+  requireActionPermission,
   requireTenant,
 } from "../../common/middleware/auth-guards.js";
 import { sendSuccess } from "../../common/utils/api-response.js";
@@ -36,7 +37,7 @@ export function createRecoveryRouter(config: AuthConfig) {
 
   router.get(
     "/",
-    requireRole("org_admin", "accounts_manager", "field_recovery", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "field_recovery", "employee"), requireActionPermission("recovery.view"),
     asyncHandler(async (req, res) => {
       const query = assignmentListQuerySchema.parse(req.query);
       const result = await listAssignments(req.auth!, req.auth!.organizationId!, query);
@@ -46,7 +47,7 @@ export function createRecoveryRouter(config: AuthConfig) {
 
   router.post(
     "/",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("recovery.assign"),
     asyncHandler(async (req, res) => {
       const body = createAssignmentSchema.parse(req.body);
       const assignment = await createAssignment(
@@ -61,7 +62,7 @@ export function createRecoveryRouter(config: AuthConfig) {
 
   router.get(
     "/:id",
-    requireRole("org_admin", "accounts_manager", "field_recovery", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "field_recovery", "employee"), requireActionPermission("recovery.view"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(res, await getAssignment(req.auth!, req.auth!.organizationId!, id));
@@ -70,7 +71,7 @@ export function createRecoveryRouter(config: AuthConfig) {
 
   router.patch(
     "/:id",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("recovery.manage"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       const body = updateAssignmentStatusSchema.parse(req.body);
@@ -89,7 +90,7 @@ export function createRecoveryRouter(config: AuthConfig) {
 
   router.post(
     "/:id/invoices/:invoiceId/call-attempts",
-    requireRole("org_admin", "accounts_manager", "field_recovery", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "field_recovery", "employee"), requireActionPermission("recovery.record_visit"),
     asyncHandler(async (req, res) => {
       const assignmentId = objectIdSchema.parse(req.params.id);
       const invoiceId = objectIdSchema.parse(req.params.invoiceId);
@@ -99,7 +100,7 @@ export function createRecoveryRouter(config: AuthConfig) {
 
   router.post(
     "/:id/visits",
-    requireRole("org_admin", "accounts_manager", "field_recovery", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "field_recovery", "employee"), requireActionPermission("recovery.record_visit"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       const body = createVisitSchema.parse(req.body);
@@ -116,7 +117,7 @@ export function createRecoveryRouter(config: AuthConfig) {
 
   router.get(
     "/:id/visits",
-    requireRole("org_admin", "accounts_manager", "field_recovery", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "field_recovery", "employee"), requireActionPermission("recovery.view"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(res, await listVisits(req.auth!, req.auth!.organizationId!, id));

@@ -1,9 +1,11 @@
 import type { RequestHandler } from "express";
 import { AppError } from "../errors/app-error.js";
 import type { AuthConfig, Role } from "../auth/auth-context.js";
+import type { ActionPermissionKey } from "../../modules/users/permission-registry.js";
 import { readAccessToken } from "../auth/tokens.js";
 import { asyncHandler } from "./async-handler.js";
 import { UserModel } from "../../modules/users/user.model.js";
+import { effectiveUserAccess } from "../../modules/users/user-access.service.js";
 import { assertTenantAccessible } from "../../modules/organizations/organization.service.js";
 import { recordAudit, requestMeta } from "../../modules/audit-logs/audit.service.js";
 
@@ -32,6 +34,7 @@ export function createRequireAuth(config: AuthConfig): RequestHandler {
       organizationId: user.organizationId ? user.organizationId.toString() : null,
       tokenVersion: user.tokenVersion,
       mustChangePassword: user.mustChangePassword,
+      workforceScope: user.role === "sub_admin" && user.workforceScope ? { mode: user.workforceScope.mode, departmentIds: user.workforceScope.departmentIds.map((id) => id.toString()), locationIds: user.workforceScope.locationIds.map((id) => id.toString()) } : undefined,
     };
     next();
   });
@@ -68,6 +71,31 @@ export function requireRole(...roles: Role[]): RequestHandler {
     }
     next();
   };
+}
+
+export function requireActionPermission(permission: ActionPermissionKey): RequestHandler {
+  return requireAnyActionPermission(permission);
+}
+
+export function requireAnyActionPermission(...permissions: ActionPermissionKey[]): RequestHandler {
+  return asyncHandler(async (req, _res, next) => {
+    if (!req.auth) throw new AppError("UNAUTHORIZED", "Authentication is required", 401);
+    if (req.auth.role === "org_admin" || req.auth.role === "super_admin") {
+      next();
+      return;
+    }
+    if (req.auth.role !== "sub_admin") {
+      next();
+      return;
+    }
+    const access = await effectiveUserAccess(req.auth.userId);
+    const hasPermission = access?.actions.some((grant) => permissions.includes(grant as ActionPermissionKey)) ?? false;
+    const grantsModuleView = permissions.some((permission) => permission.endsWith(".view") && Boolean(access?.actions.some((grant) => grant.startsWith(`${permission.slice(0, -5)}.`) && grant !== permission)));
+    if (!hasPermission && !grantsModuleView) {
+      throw new AppError("FORBIDDEN", "Your administrator has not granted permission for this action", 403);
+    }
+    next();
+  });
 }
 
 export const rejectMismatchedOrganization: RequestHandler = asyncHandler(async (req, _res, next) => {

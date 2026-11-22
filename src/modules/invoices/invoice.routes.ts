@@ -7,6 +7,7 @@ import {
   rejectMismatchedOrganization,
   requirePasswordChanged,
   requireRole,
+  requireActionPermission,
   requireTenant,
 } from "../../common/middleware/auth-guards.js";
 import { sendSuccess } from "../../common/utils/api-response.js";
@@ -39,7 +40,7 @@ export function createInvoiceRouter(config: AuthConfig) {
 
   router.get(
     "/",
-    requireRole("org_admin", "accounts_manager", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("invoices.view"),
     asyncHandler(async (req, res) => {
       const query = invoiceListQuerySchema.parse(req.query);
       const result = await listInvoices(req.auth!.organizationId!, query);
@@ -49,7 +50,7 @@ export function createInvoiceRouter(config: AuthConfig) {
 
   router.post(
     "/",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("invoices.create"),
     asyncHandler(async (req, res) => {
       const body = createInvoiceDraftSchema.parse(req.body);
       const invoice = await createDraft(
@@ -64,7 +65,7 @@ export function createInvoiceRouter(config: AuthConfig) {
 
   router.get(
     "/:id",
-    requireRole("org_admin", "accounts_manager", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("invoices.view"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(res, await getInvoice(req.auth!.organizationId!, id));
@@ -73,7 +74,7 @@ export function createInvoiceRouter(config: AuthConfig) {
 
   router.patch(
     "/:id",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("invoices.update_draft"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       const body = updateInvoiceDraftSchema.parse(req.body);
@@ -86,7 +87,7 @@ export function createInvoiceRouter(config: AuthConfig) {
 
   router.post(
     "/:id/issue",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("invoices.issue"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(
@@ -98,7 +99,7 @@ export function createInvoiceRouter(config: AuthConfig) {
 
   router.post(
     "/:id/cancel",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("invoices.cancel"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       const body = cancelInvoiceSchema.parse(req.body);
@@ -111,7 +112,7 @@ export function createInvoiceRouter(config: AuthConfig) {
 
   router.delete(
     "/:id",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("invoices.create"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(
@@ -123,7 +124,7 @@ export function createInvoiceRouter(config: AuthConfig) {
 
   router.post(
     "/:id/acknowledgements",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("invoices.acknowledge"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       const body = updateAcknowledgementSchema.parse(req.body);
@@ -142,7 +143,7 @@ export function createInvoiceRouter(config: AuthConfig) {
 
   router.get(
     "/:id/acknowledgements",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("invoices.view"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(res, await getAcknowledgementHistory(req.auth!.organizationId!, id));

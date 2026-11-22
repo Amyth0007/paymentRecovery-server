@@ -2,6 +2,7 @@ import { z } from "zod";
 import { TENANT_ROLES } from "../../common/auth/auth-context.js";
 import { isValidTimeZone } from "../../common/utils/calendar-date.js";
 import { MODULES } from "../../modules/organizations/module-registry.js";
+import { ACTION_PERMISSION_KEYS } from "../../modules/users/permission-registry.js";
 
 export const objectIdSchema = z.string().regex(/^[a-f\d]{24}$/i, "Invalid id");
 
@@ -27,6 +28,7 @@ export const settingsSchema = z.object({
 export const createOrganizationSchema = z.object({
   name: z.string().trim().min(1).max(160),
   legalName: z.string().trim().max(200).optional(),
+  address: z.string().trim().max(500).optional(),
   gstin: gstinSchema.optional(),
   timezone: timezoneSchema.optional(),
   admin: z.object({
@@ -44,6 +46,13 @@ export const updateStatusSchema = z.object({
 export const moduleKeySchema = z.enum(Object.keys(MODULES) as [keyof typeof MODULES, ...(keyof typeof MODULES)[]]);
 export const updateModuleSchema = z.object({ enabled: z.boolean() });
 
+export const customRoleInputSchema = z.object({
+  name: z.string().trim().min(2).max(80),
+  description: z.string().trim().max(300).default(""),
+  modulePermissions: z.array(moduleKeySchema).min(1).max(30),
+  actionPermissions: z.array(z.enum(ACTION_PERMISSION_KEYS)).min(1).max(100),
+}).refine((value) => new Set(value.modulePermissions).size === value.modulePermissions.length && new Set(value.actionPermissions).size === value.actionPermissions.length, { message: "Modules and actions must not contain duplicates" });
+
 export const createPlanSchema = z.object({
   code: z.string().trim().toLowerCase().min(2).max(40).regex(/^[a-z0-9-]+$/),
   name: z.string().trim().min(1).max(120),
@@ -59,6 +68,7 @@ export const upsertSubscriptionSchema = z.object({
 export const updateOwnOrganizationSchema = z.object({
   name: z.string().trim().min(1).max(160).optional(),
   legalName: z.string().trim().max(200).optional(),
+  address: z.string().trim().max(500).optional(),
   gstin: gstinSchema.nullable().optional(),
   timezone: timezoneSchema.optional(),
   settings: settingsSchema.optional(),
@@ -71,13 +81,18 @@ export const organizationListQuerySchema = z.object({
   status: z.enum(["active", "suspended", "deactivated"]).optional(),
 });
 
+export const workforceScopeSchema = z.object({ mode: z.enum(["organization", "selected"]).default("organization"), departmentIds: z.array(objectIdSchema).max(100).default([]), locationIds: z.array(objectIdSchema).max(100).default([]) }).refine((scope) => scope.mode !== "selected" || scope.departmentIds.length > 0 || scope.locationIds.length > 0, { message: "Choose at least one department or work location for a restricted scope" }).refine((scope) => new Set(scope.departmentIds).size === scope.departmentIds.length && new Set(scope.locationIds).size === scope.locationIds.length, { message: "Scope selections must not contain duplicates" });
+
 export const createEmployeeSchema = z.object({
   name: z.string().trim().min(1).max(120),
   email: z.email().trim().toLowerCase(),
   role: z.enum(TENANT_ROLES),
   temporaryPassword: passwordSchema,
   modulePermissions: z.array(moduleKeySchema).optional(),
-});
+  actionPermissions: z.array(z.enum(ACTION_PERMISSION_KEYS)).optional(),
+  customRoleId: objectIdSchema.nullable().optional(),
+  workforceScope: workforceScopeSchema.optional(),
+}).refine((value) => !value.workforceScope || value.role === "sub_admin", { message: "Data scopes can only be assigned to subadmins", path: ["workforceScope"] }).refine((value) => !value.customRoleId || (value.role === "sub_admin" && !value.modulePermissions?.length && !value.actionPermissions?.length), { message: "Custom roles can only be assigned to subadmins without separate permission overrides", path: ["customRoleId"] });
 
 export const updateEmployeeSchema = z
   .object({
@@ -85,8 +100,14 @@ export const updateEmployeeSchema = z
     status: z.enum(["active", "disabled"]).optional(),
     temporaryPassword: passwordSchema.optional(),
     modulePermissions: z.array(moduleKeySchema).optional(),
+    actionPermissions: z.array(z.enum(ACTION_PERMISSION_KEYS)).optional(),
+    customRoleId: objectIdSchema.nullable().optional(),
+    workforceScope: workforceScopeSchema.optional(),
   })
-  .refine((value) => value.role !== undefined || value.status !== undefined || value.temporaryPassword !== undefined || value.modulePermissions !== undefined, {
+  .refine((value) => value.workforceScope === undefined || value.role === undefined || value.role === "sub_admin", { message: "Data scopes can only be assigned to subadmins", path: ["workforceScope"] })
+  .refine((value) => !value.customRoleId || (value.role === undefined || value.role === "sub_admin") , { message: "Custom roles are only available to subadmins", path: ["customRoleId"] })
+  .refine((value) => value.customRoleId === undefined || value.modulePermissions === undefined && value.actionPermissions === undefined, { message: "Custom roles cannot be combined with separate permission overrides", path: ["customRoleId"] })
+  .refine((value) => value.role !== undefined || value.status !== undefined || value.temporaryPassword !== undefined || value.modulePermissions !== undefined || value.actionPermissions !== undefined || value.customRoleId !== undefined || value.workforceScope !== undefined, {
     message: "No changes were provided",
   });
 

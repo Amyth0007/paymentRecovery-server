@@ -7,6 +7,7 @@ import {
   rejectMismatchedOrganization,
   requirePasswordChanged,
   requireRole,
+  requireActionPermission,
   requireTenant,
 } from "../../common/middleware/auth-guards.js";
 import { sendSuccess } from "../../common/utils/api-response.js";
@@ -24,7 +25,7 @@ export function createReportsRouter(config: AuthConfig) {
 
   router.get(
     "/dashboard",
-    requireRole("org_admin", "accounts_manager", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("reports.view"),
     asyncHandler(async (req, res) => {
       sendSuccess(res, await getDashboardMetrics(req.auth!.organizationId!));
     }),
@@ -32,7 +33,7 @@ export function createReportsRouter(config: AuthConfig) {
 
   router.get(
     "/aging",
-    requireRole("org_admin", "accounts_manager", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("reports.view"),
     asyncHandler(async (req, res) => {
       sendSuccess(res, await getAgingBuckets(req.auth!.organizationId!));
     }),
@@ -40,7 +41,7 @@ export function createReportsRouter(config: AuthConfig) {
 
   router.get(
     "/outstanding/customers",
-    requireRole("org_admin", "accounts_manager", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("reports.view"),
     asyncHandler(async (req, res) => {
       sendSuccess(res, await getCustomerOutstandingReport(req.auth!.organizationId!));
     }),

@@ -4,7 +4,7 @@ import type { AuthConfig } from "../../common/auth/auth-context.js";
 import { AppError } from "../../common/errors/app-error.js";
 import { asyncHandler } from "../../common/middleware/async-handler.js";
 import { requireEnabledModule } from "../../common/middleware/module-guards.js";
-import { createRequireAuth, requirePasswordChanged, requireRole, requireTenant } from "../../common/middleware/auth-guards.js";
+import { createRequireAuth, requireActionPermission, requirePasswordChanged, requireRole, requireTenant } from "../../common/middleware/auth-guards.js";
 import { sendSuccess } from "../../common/utils/api-response.js";
 import { beginGmailAuthorization, completeGmailAuthorization, disconnectGmail, gmailConnectionStatus, sendGmail } from "./gmail.service.js";
 
@@ -35,7 +35,7 @@ export function createGmailRouter(config: AuthConfig) {
 
   router.use(requireAuth, requirePasswordChanged, requireTenant, requireEnabledModule("gmail"));
 
-  router.get("/connection", requireRole("org_admin", "accounts_manager"), asyncHandler(async (req, res) => {
+  router.get("/connection", requireRole("org_admin", "sub_admin", "accounts_manager"), asyncHandler(async (req, res) => {
     sendSuccess(res, await gmailConnectionStatus(req.auth!.organizationId!));
   }));
 
@@ -48,7 +48,7 @@ export function createGmailRouter(config: AuthConfig) {
     sendSuccess(res, { disconnected: true });
   }));
 
-  router.post("/send", requireRole("org_admin", "accounts_manager"), asyncHandler(async (req, res) => {
+  router.post("/send", requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("gmail.send"), asyncHandler(async (req, res) => {
     const input = sendEmailSchema.parse(req.body);
     sendSuccess(res, await sendGmail(req.auth!, input), undefined, 201);
   }));

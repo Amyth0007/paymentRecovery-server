@@ -6,6 +6,7 @@ import {
   objectIdSchema,
   updateEmployeeSchema,
   userListQuerySchema,
+  customRoleInputSchema,
 } from "../../common/validators/schemas.js";
 import { asyncHandler } from "../../common/middleware/async-handler.js";
 import { requireEnabledModule } from "../../common/middleware/module-guards.js";
@@ -18,6 +19,7 @@ import {
 } from "../../common/middleware/auth-guards.js";
 import { requestMeta } from "../audit-logs/audit.service.js";
 import { createEmployee, listEmployees, updateEmployee } from "./user.service.js";
+import { archiveCustomRole, listCustomRoles, saveCustomRole } from "./custom-role.service.js";
 
 export function createUserRouter(config: AuthConfig) {
   const router = Router();
@@ -29,6 +31,23 @@ export function createUserRouter(config: AuthConfig) {
     requireRole("org_admin"),
     requireEnabledModule("settings"),
     rejectMismatchedOrganization,
+  );
+
+  router.get(
+    "/roles",
+    asyncHandler(async (req, res) => sendSuccess(res, await listCustomRoles(req.auth!.organizationId!))),
+  );
+  router.post(
+    "/roles",
+    asyncHandler(async (req, res) => sendSuccess(res, await saveCustomRole(req.auth!, req.auth!.organizationId!, customRoleInputSchema.parse(req.body), undefined, requestMeta(req)), undefined, 201)),
+  );
+  router.patch(
+    "/roles/:id",
+    asyncHandler(async (req, res) => sendSuccess(res, await saveCustomRole(req.auth!, req.auth!.organizationId!, customRoleInputSchema.parse(req.body), objectIdSchema.parse(req.params.id), requestMeta(req)))),
+  );
+  router.delete(
+    "/roles/:id",
+    asyncHandler(async (req, res) => sendSuccess(res, await archiveCustomRole(req.auth!, req.auth!.organizationId!, objectIdSchema.parse(req.params.id), requestMeta(req)))),
   );
 
   router.get(

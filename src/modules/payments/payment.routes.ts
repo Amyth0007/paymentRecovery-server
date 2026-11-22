@@ -8,6 +8,7 @@ import {
   rejectMismatchedOrganization,
   requirePasswordChanged,
   requireRole,
+  requireActionPermission,
   requireTenant,
 } from "../../common/middleware/auth-guards.js";
 import { sendSuccess } from "../../common/utils/api-response.js";
@@ -34,7 +35,7 @@ export function createPaymentRouter(config: AuthConfig) {
 
   router.get(
     "/",
-    requireRole("org_admin", "accounts_manager", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("payments.view"),
     asyncHandler(async (req, res) => {
       const query = paymentListQuerySchema.parse(req.query);
       const result = await listPayments(req.auth!.organizationId!, query);
@@ -44,7 +45,7 @@ export function createPaymentRouter(config: AuthConfig) {
 
   router.post(
     "/",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("payments.record"),
     asyncHandler(async (req, res) => {
       const body = createPaymentSchema.parse(req.body);
       const idempotencyKey =
@@ -63,7 +64,7 @@ export function createPaymentRouter(config: AuthConfig) {
 
   router.get(
     "/invoices/:invoiceId/ledger",
-    requireRole("org_admin", "accounts_manager", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("payments.view"),
     asyncHandler(async (req, res) => {
       const invoiceId = objectIdSchema.parse(req.params.invoiceId);
       sendSuccess(res, await getInvoiceLedger(req.auth!.organizationId!, invoiceId));
@@ -72,7 +73,7 @@ export function createPaymentRouter(config: AuthConfig) {
 
   router.get(
     "/:id",
-    requireRole("org_admin", "accounts_manager", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("payments.view"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(res, await getPayment(req.auth!.organizationId!, id));
@@ -81,7 +82,7 @@ export function createPaymentRouter(config: AuthConfig) {
 
   router.post(
     "/:id/reverse",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("payments.reverse"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       const body = reversePaymentSchema.parse(req.body);

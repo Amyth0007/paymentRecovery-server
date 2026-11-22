@@ -7,6 +7,7 @@ import {
   rejectMismatchedOrganization,
   requirePasswordChanged,
   requireRole,
+  requireActionPermission,
   requireTenant,
 } from "../../common/middleware/auth-guards.js";
 import { sendSuccess } from "../../common/utils/api-response.js";
@@ -33,7 +34,7 @@ export function createCustomerRouter(config: AuthConfig) {
 
   router.get(
     "/",
-    requireRole("org_admin", "accounts_manager", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("customers.view"),
     asyncHandler(async (req, res) => {
       const query = customerListQuerySchema.parse(req.query);
       const result = await listCustomers(req.auth!.organizationId!, query);
@@ -43,7 +44,7 @@ export function createCustomerRouter(config: AuthConfig) {
 
   router.post(
     "/",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("customers.create"),
     asyncHandler(async (req, res) => {
       const body = createCustomerSchema.parse(req.body);
       const customer = await createCustomer(
@@ -58,7 +59,7 @@ export function createCustomerRouter(config: AuthConfig) {
 
   router.get(
     "/:id",
-    requireRole("org_admin", "accounts_manager", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("customers.view"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(res, await getCustomer(req.auth!.organizationId!, id));
@@ -67,7 +68,7 @@ export function createCustomerRouter(config: AuthConfig) {
 
   router.patch(
     "/:id",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("customers.update"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       const body = updateCustomerSchema.parse(req.body);
@@ -80,7 +81,7 @@ export function createCustomerRouter(config: AuthConfig) {
 
   router.post(
     "/:id/archive",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("customers.archive"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(

@@ -16,6 +16,7 @@ const organizationSchema = new Schema(
   {
     name: { type: String, required: true, trim: true },
     legalName: { type: String, default: "", trim: true },
+    address: { type: String, default: "", trim: true, maxlength: 500 },
     gstin: { type: String, default: null },
     timezone: { type: String, required: true, default: "Asia/Kolkata" },
     currency: { type: String, required: true, default: "INR" },

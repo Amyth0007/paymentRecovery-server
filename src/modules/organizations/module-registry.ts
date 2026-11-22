@@ -8,6 +8,11 @@ export const MODULES = {
   gmail: { name: "Gmail integration", description: "Connect Gmail and send customer messages", defaultEnabled: true },
   settings: { name: "Workspace settings & team", description: "Organization profile and staff administration", defaultEnabled: true },
   attendance: { name: "Attendance", description: "Location-based attendance and history", defaultEnabled: false },
+  workforce: { name: "Workforce", description: "Employee profiles, departments, and job designations", defaultEnabled: false },
+  payroll: { name: "Payroll", description: "Compensation setup, daily earnings, and payroll processing", defaultEnabled: false },
+  overtime: { name: "Overtime", description: "Overtime policies, requests, review, and payable hours", defaultEnabled: false },
+  leave: { name: "Leave", description: "Leave types, balances, requests, and approvals", defaultEnabled: false },
+  compliance: { name: "Compliance rules", description: "Versioned jurisdictional payroll rule configuration", defaultEnabled: false },
 } as const;
 
 export type ModuleKey = keyof typeof MODULES;

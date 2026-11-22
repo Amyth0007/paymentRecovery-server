@@ -3,7 +3,7 @@ import type { AuthConfig } from "../../common/auth/auth-context.js";
 import { asyncHandler } from "../../common/middleware/async-handler.js";
 import {
   createRequireAuth, rejectMismatchedOrganization, requirePasswordChanged,
-  requireRole, requireTenant,
+  requireActionPermission, requireAnyActionPermission, requireRole, requireTenant,
 } from "../../common/middleware/auth-guards.js";
 import { requireEnabledModule } from "../../common/middleware/module-guards.js";
 import { sendSuccess } from "../../common/utils/api-response.js";
@@ -11,15 +11,17 @@ import { objectIdSchema } from "../../common/validators/schemas.js";
 import { requestMeta } from "../audit-logs/audit.service.js";
 import {
   attendanceDashboard, checkIn, checkOut, createCorrectionRequest, createOfficeLocation,
-  getAttendanceConfig, listAttendanceRecords, listCorrections, listEmployeeCorrections,
+  getAttendanceConfig, listAttendanceEmployees, listAttendanceRecords, listCorrections, listEmployeeCorrections,
   reviewCorrection, updateAttendancePolicy, updateOfficeLocation,
   deleteOfficeLocation, upsertAttendanceAdjustment,
+  recordGuardPunch,
 } from "./attendance.service.js";
 import {
   attendanceListQuerySchema, attendancePolicySchema, attendancePunchSchema,
   correctionCreateSchema, correctionListQuerySchema, correctionReviewSchema,
   officeLocationSchema,
   attendanceAdjustmentSchema,
+  guardPunchSchema,
 } from "./attendance.schemas.js";
 
 export function createAttendanceRouter(config: AuthConfig) {
@@ -27,42 +29,55 @@ export function createAttendanceRouter(config: AuthConfig) {
   const requireAuth = createRequireAuth(config);
   router.use(requireAuth, requirePasswordChanged, requireTenant, requireEnabledModule("attendance"), rejectMismatchedOrganization);
 
-  router.get("/config", asyncHandler(async (req, res) => {
-    sendSuccess(res, await getAttendanceConfig(req.auth!.organizationId!));
+  router.get("/config", requireActionPermission("attendance.view"), asyncHandler(async (req, res) => {
+    sendSuccess(res, await getAttendanceConfig(req.auth!, req.auth!.organizationId!));
   }));
 
-  router.patch("/policy", requireRole("org_admin"), asyncHandler(async (req, res) => {
+  router.get("/employees", requireRole("org_admin", "sub_admin", "guard"), requireAnyActionPermission("attendance.view_all", "attendance.adjust", "attendance.guard_punch"), asyncHandler(async (req, res) => {
+    sendSuccess(res, await listAttendanceEmployees(req.auth!.organizationId!));
+  }));
+
+  router.get("/guard-config", requireRole("org_admin", "sub_admin", "guard"), requireAnyActionPermission("attendance.view_all", "attendance.adjust", "attendance.guard_punch"), asyncHandler(async (req, res) => {
+    const config = await getAttendanceConfig(req.auth!, req.auth!.organizationId!);
+    sendSuccess(res, { policy: config.policy, locations: config.locations });
+  }));
+
+  router.post("/guard-punch", requireRole("org_admin", "sub_admin", "guard"), requireAnyActionPermission("attendance.view_all", "attendance.adjust", "attendance.guard_punch"), asyncHandler(async (req, res) => {
+    sendSuccess(res, await recordGuardPunch(req.auth!, req.auth!.organizationId!, guardPunchSchema.parse(req.body), requestMeta(req)), undefined, 201);
+  }));
+
+  router.patch("/policy", requireRole("org_admin", "sub_admin"), requireActionPermission("attendance.manage_policy"), asyncHandler(async (req, res) => {
     const input = attendancePolicySchema.parse(req.body);
     sendSuccess(res, await updateAttendancePolicy(req.auth!, req.auth!.organizationId!, input, requestMeta(req)));
   }));
 
-  router.post("/locations", requireRole("org_admin"), asyncHandler(async (req, res) => {
+  router.post("/locations", requireRole("org_admin", "sub_admin"), requireActionPermission("attendance.manage_locations"), asyncHandler(async (req, res) => {
     const input = officeLocationSchema.parse(req.body);
     sendSuccess(res, await createOfficeLocation(req.auth!, req.auth!.organizationId!, input, requestMeta(req)), undefined, 201);
   }));
 
-  router.patch("/locations/:id", requireRole("org_admin"), asyncHandler(async (req, res) => {
+  router.patch("/locations/:id", requireRole("org_admin", "sub_admin"), requireActionPermission("attendance.manage_locations"), asyncHandler(async (req, res) => {
     const id = objectIdSchema.parse(req.params.id);
     const input = officeLocationSchema.parse(req.body);
     sendSuccess(res, await updateOfficeLocation(req.auth!, req.auth!.organizationId!, id, input, requestMeta(req)));
   }));
 
-  router.delete("/locations/:id", requireRole("org_admin"), asyncHandler(async (req, res) => {
+  router.delete("/locations/:id", requireRole("org_admin", "sub_admin"), requireActionPermission("attendance.manage_locations"), asyncHandler(async (req, res) => {
     const id = objectIdSchema.parse(req.params.id);
     sendSuccess(res, await deleteOfficeLocation(req.auth!, req.auth!.organizationId!, id, requestMeta(req)));
   }));
 
-  router.put("/admin/adjustments", requireRole("org_admin"), asyncHandler(async (req, res) => {
+  router.put("/admin/adjustments", requireRole("org_admin", "sub_admin"), requireActionPermission("attendance.adjust"), asyncHandler(async (req, res) => {
     const input = attendanceAdjustmentSchema.parse(req.body);
     sendSuccess(res, await upsertAttendanceAdjustment(req.auth!, req.auth!.organizationId!, input, requestMeta(req)));
   }));
 
-  router.get("/dashboard", requireRole("org_admin"), asyncHandler(async (req, res) => {
+  router.get("/dashboard", requireRole("org_admin", "sub_admin"), requireActionPermission("attendance.view_all"), asyncHandler(async (req, res) => {
     const date = typeof req.query.date === "string" ? req.query.date : undefined;
     sendSuccess(res, await attendanceDashboard(req.auth!.organizationId!, date));
   }));
 
-  router.get("/records", asyncHandler(async (req, res) => {
+  router.get("/records", requireActionPermission("attendance.view"), asyncHandler(async (req, res) => {
     const query = attendanceListQuerySchema.parse(req.query);
     const result = await listAttendanceRecords(req.auth!, req.auth!.organizationId!, query);
     sendSuccess(res, result.items, result.meta);
@@ -89,13 +104,13 @@ export function createAttendanceRouter(config: AuthConfig) {
     sendSuccess(res, result.items, result.meta);
   }));
 
-  router.get("/corrections", requireRole("org_admin"), asyncHandler(async (req, res) => {
+  router.get("/corrections", requireRole("org_admin", "sub_admin"), requireActionPermission("attendance.review_corrections"), asyncHandler(async (req, res) => {
     const query = correctionListQuerySchema.parse(req.query);
     const result = await listCorrections(req.auth!.organizationId!, query);
     sendSuccess(res, result.items, result.meta);
   }));
 
-  router.patch("/corrections/:id/review", requireRole("org_admin"), asyncHandler(async (req, res) => {
+  router.patch("/corrections/:id/review", requireRole("org_admin", "sub_admin"), requireActionPermission("attendance.review_corrections"), asyncHandler(async (req, res) => {
     const id = objectIdSchema.parse(req.params.id);
     const input = correctionReviewSchema.parse(req.body);
     sendSuccess(res, await reviewCorrection(req.auth!, req.auth!.organizationId!, id, input, requestMeta(req)));

@@ -7,6 +7,7 @@ import {
   rejectMismatchedOrganization,
   requirePasswordChanged,
   requireRole,
+  requireActionPermission,
   requireTenant,
 } from "../../common/middleware/auth-guards.js";
 import { sendSuccess } from "../../common/utils/api-response.js";
@@ -34,7 +35,7 @@ export function createCommitmentRouter(config: AuthConfig) {
 
   router.get(
     "/",
-    requireRole("org_admin", "accounts_manager", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("commitments.view"),
     asyncHandler(async (req, res) => {
       const query = commitmentListQuerySchema.parse(req.query);
       const result = await listCommitments(req.auth!.organizationId!, query);
@@ -44,7 +45,7 @@ export function createCommitmentRouter(config: AuthConfig) {
 
   router.post(
     "/",
-    requireRole("org_admin", "accounts_manager", "field_recovery", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "field_recovery", "employee"), requireActionPermission("commitments.create"),
     asyncHandler(async (req, res) => {
       const body = createCommitmentSchema.parse(req.body);
       const commitment = await createCommitment(
@@ -59,7 +60,7 @@ export function createCommitmentRouter(config: AuthConfig) {
 
   router.get(
     "/:id",
-    requireRole("org_admin", "accounts_manager", "employee"),
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("commitments.view"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       sendSuccess(res, await getCommitment(req.auth!.organizationId!, id));
@@ -68,7 +69,7 @@ export function createCommitmentRouter(config: AuthConfig) {
 
   router.post(
     "/:id/cancel",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("commitments.cancel"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       const body = cancelCommitmentSchema.parse(req.body);
@@ -81,7 +82,7 @@ export function createCommitmentRouter(config: AuthConfig) {
 
   router.post(
     "/:id/evaluate",
-    requireRole("org_admin", "accounts_manager"),
+    requireRole("org_admin", "sub_admin", "accounts_manager"), requireActionPermission("commitments.evaluate"),
     asyncHandler(async (req, res) => {
       const id = objectIdSchema.parse(req.params.id);
       const body = evaluateCommitmentSchema.parse(req.body);

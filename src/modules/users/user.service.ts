@@ -82,6 +82,7 @@ export async function presentSessionUser(userId: string) {
           address: organization.address,
           status: organization.status,
           timezone: organization.timezone,
+          showGuides: organization.showGuides ?? true,
           currency: organization.currency,
           modules: Object.fromEntries(Object.keys(MODULES).map((key) => [key, isModuleEnabled(organization.modules, key as ModuleKey)])),
         }
@@ -258,16 +259,26 @@ export async function updateEmployee(
   }
   const accessRole = user.customRoleId ? await getAssignableCustomRole(organizationId, user.customRoleId.toString()).catch(() => null) : null;
   await user.save();
-  await recordAudit({
-    actor,
-    action: "user.updated",
-    entityType: "user",
-    entityId: user._id.toString(),
-    organizationId,
-    before,
-    after: { role: user.role, status: user.status, customRoleId: user.customRoleId?.toString() ?? null, customRoleName: customRoleName ?? accessRole?.name ?? null, modulePermissions: Object.fromEntries(user.modulePermissions ?? new Map()), modulePermissionsConfigured: user.modulePermissionsConfigured, actionPermissions: user.actionPermissions ?? [], passwordReset: Boolean(input.temporaryPassword) },
-    meta,
-  });
+  try {
+    await recordAudit({
+      actor,
+      action: "user.updated",
+      entityType: "user",
+      entityId: user._id.toString(),
+      organizationId,
+      before,
+      after: { role: user.role, status: user.status, customRoleId: user.customRoleId?.toString() ?? null, customRoleName: customRoleName ?? accessRole?.name ?? null, modulePermissions: Object.fromEntries(user.modulePermissions ?? new Map()), modulePermissionsConfigured: user.modulePermissionsConfigured, actionPermissions: user.actionPermissions ?? [], passwordReset: Boolean(input.temporaryPassword) },
+      meta,
+    });
+  } catch (error) {
+    // The user update is already committed. An audit store outage must not report
+    // the role change as failed after it has taken effect.
+    console.error("Could not record user update audit event", {
+      userId: user._id.toString(),
+      organizationId,
+      error,
+    });
+  }
   return { ...presentUser(user), customRoleName: customRoleName ?? accessRole?.name ?? null };
 }
 

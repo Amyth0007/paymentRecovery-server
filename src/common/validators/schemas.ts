@@ -71,6 +71,7 @@ export const updateOwnOrganizationSchema = z.object({
   address: z.string().trim().max(500).optional(),
   gstin: gstinSchema.nullable().optional(),
   timezone: timezoneSchema.optional(),
+  showGuides: z.boolean().optional(),
   settings: settingsSchema.optional(),
 });
 

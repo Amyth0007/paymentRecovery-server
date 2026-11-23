@@ -148,10 +148,10 @@ export async function saveDesignation(actor: AuthContext, orgId: string, input: 
   return { id: record._id.toString(), name: record.name, description: record.description, status: record.status };
 }
 
-export async function listShifts(_actor: AuthContext, orgId: string) {
+export async function listShifts(_actor: AuthContext, orgId: string, section: "shifts" | "assignments" | "assignment-form" | "all" = "all") {
   const [shifts, assignments] = await Promise.all([
-    ShiftModel.find({ organizationId: orgId }).sort({ effectiveFrom: -1, name: 1 }).lean(),
-    ShiftAssignmentModel.find({ organizationId: orgId, $or: [{ effectiveTo: null }, { effectiveTo: { $gte: new Date().toISOString().slice(0, 10) } }] }).populate("employeeId", "employeeNumber firstName lastName").populate("shiftId", "name").sort({ effectiveFrom: -1 }).lean(),
+    section === "shifts" || section === "assignment-form" || section === "all" ? ShiftModel.find({ organizationId: orgId }).sort({ effectiveFrom: -1, name: 1 }).lean() : Promise.resolve([]),
+    section === "assignments" || section === "assignment-form" || section === "all" ? ShiftAssignmentModel.find({ organizationId: orgId, $or: [{ effectiveTo: null }, { effectiveTo: { $gte: new Date().toISOString().slice(0, 10) } }] }).populate("employeeId", "employeeNumber firstName lastName").populate("shiftId", "name").sort({ effectiveFrom: -1 }).lean() : Promise.resolve([]),
   ]);
   return { shifts: shifts.map((shift) => ({ id: shift._id.toString(), name: shift.name, shiftType: shift.shiftType, startTime: shift.startTime, endTime: shift.endTime, crossesMidnight: shift.crossesMidnight, flexibleWindowMinutes: shift.flexibleWindowMinutes, breaks: shift.breaks, weeklyOffs: shift.weeklyOffs, effectiveFrom: shift.effectiveFrom, effectiveTo: shift.effectiveTo, status: shift.status })), assignments: assignments.map((item: any) => ({ id: item._id.toString(), employee: item.employeeId, shift: item.shiftId, effectiveFrom: item.effectiveFrom, effectiveTo: item.effectiveTo })) };
 }
@@ -493,11 +493,11 @@ export async function reviewDailyEarning(actor: AuthContext, orgId: string, id: 
   return { id, status: entry.status };
 }
 
-export async function listOvertime(actor: AuthContext, orgId: string) {
-  const employeeIds = await accessibleWorkforceEmployeeIds(orgId, actor);
+export async function listOvertime(actor: AuthContext, orgId: string, section: "policies" | "entries" | "all" = "all") {
+  const employeeIds = section === "policies" ? null : await accessibleWorkforceEmployeeIds(orgId, actor);
   const [policies, entries] = await Promise.all([
-    OvertimePolicyModel.find({ organizationId: orgId }).sort({ effectiveFrom: -1 }).lean(),
-    OvertimeEntryModel.find({ organizationId: orgId, ...(employeeIds ? { employeeId: { $in: employeeIds } } : {}) }).populate("employeeId", "employeeNumber firstName lastName").sort({ workDate: -1, createdAt: -1 }).limit(500).lean(),
+    section !== "entries" ? OvertimePolicyModel.find({ organizationId: orgId }).sort({ effectiveFrom: -1 }).lean() : Promise.resolve([]),
+    section !== "policies" ? OvertimeEntryModel.find({ organizationId: orgId, ...(employeeIds ? { employeeId: { $in: employeeIds } } : {}) }).populate("employeeId", "employeeNumber firstName lastName").sort({ workDate: -1, createdAt: -1 }).limit(500).lean() : Promise.resolve([]),
   ]);
   return { policies: policies.map((item) => ({ id: item._id.toString(), name: item.name, calculation: item.calculation, multiplierBasisPoints: item.multiplierBasisPoints, hourlyRateMinor: item.hourlyRateMinor, minimumMinutes: item.minimumMinutes, roundingMinutes: item.roundingMinutes, maximumMinutesPerDay: item.maximumMinutesPerDay, effectiveFrom: item.effectiveFrom, effectiveTo: item.effectiveTo, status: item.status })), entries: entries.map((item: any) => ({ id: item._id.toString(), employee: item.employeeId, workDate: item.workDate, actualMinutes: item.actualMinutes, calculatedMinutes: item.calculatedMinutes, approvedMinutes: item.approvedMinutes, hourlyRateMinor: item.hourlyRateMinor, payableAmountMinor: item.payableAmountMinor, status: item.status, reason: item.reason, policySnapshot: item.policySnapshot })) };
 }

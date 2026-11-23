@@ -46,7 +46,11 @@ export function createWorkforceRouter(config: AuthConfig) {
   router.get("/designations", requireRole("org_admin", "sub_admin"), requireActionPermission("workforce.view"), asyncHandler(async (req, res) => sendSuccess(res, await listDesignations(req.auth!.organizationId!))));
   router.post("/designations", requireRole("org_admin", "sub_admin"), requireActionPermission("workforce.manage_departments"), asyncHandler(async (req, res) => sendSuccess(res, await saveDesignation(req.auth!, req.auth!.organizationId!, designationSchema.parse(req.body), undefined, requestMeta(req)), undefined, 201)));
   router.patch("/designations/:id", requireRole("org_admin", "sub_admin"), requireActionPermission("workforce.manage_departments"), asyncHandler(async (req, res) => sendSuccess(res, await saveDesignation(req.auth!, req.auth!.organizationId!, designationSchema.parse(req.body), objectIdSchema.parse(req.params.id), requestMeta(req)))));
-  router.get("/shifts", requireRole("org_admin", "sub_admin", "employee"), requireActionPermission("workforce.view_shifts"), asyncHandler(async (req, res) => sendSuccess(res, await listShifts(req.auth!, req.auth!.organizationId!))));
+  router.get("/shifts", requireRole("org_admin", "sub_admin", "employee"), requireActionPermission("workforce.view_shifts"), asyncHandler(async (req, res) => {
+    const value = req.query.section;
+    const section = value === "shifts" || value === "assignments" || value === "assignment-form" ? value : "all";
+    sendSuccess(res, await listShifts(req.auth!, req.auth!.organizationId!, section));
+  }));
   router.post("/shifts", requireRole("org_admin", "sub_admin"), requireActionPermission("workforce.manage_shifts"), asyncHandler(async (req, res) => sendSuccess(res, await createShift(req.auth!, req.auth!.organizationId!, shiftSchema.parse(req.body), requestMeta(req)), undefined, 201)));
   router.patch("/shifts/:id", requireRole("org_admin", "sub_admin"), requireActionPermission("workforce.manage_shifts"), asyncHandler(async (req, res) => sendSuccess(res, await updateShift(req.auth!, req.auth!.organizationId!, objectIdSchema.parse(req.params.id), shiftSchema.parse(req.body), requestMeta(req)))));
   router.delete("/shifts/:id", requireRole("org_admin", "sub_admin"), requireActionPermission("workforce.manage_shifts"), asyncHandler(async (req, res) => sendSuccess(res, await deleteShift(req.auth!, req.auth!.organizationId!, objectIdSchema.parse(req.params.id), requestMeta(req)))));

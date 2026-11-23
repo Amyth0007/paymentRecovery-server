@@ -19,6 +19,7 @@ const organizationSchema = new Schema(
     address: { type: String, default: "", trim: true, maxlength: 500 },
     gstin: { type: String, default: null },
     timezone: { type: String, required: true, default: "Asia/Kolkata" },
+    showGuides: { type: Boolean, required: true, default: true },
     currency: { type: String, required: true, default: "INR" },
     status: {
       type: String,

@@ -104,6 +104,7 @@ export async function presentOrganization(organizationId: string) {
     address: organization.address,
     gstin: organization.gstin,
     timezone: organization.timezone,
+    showGuides: organization.showGuides ?? true,
     currency: organization.currency,
     status: organization.status,
     modules: Object.fromEntries(Object.keys(MODULES).map((key) => [key, isModuleEnabled(organization.modules, key as ModuleKey)])),
@@ -333,7 +334,7 @@ export async function updateOwnOrganization(
   if (!organization) {
     throw new AppError("NOT_FOUND", "Organization was not found", 404);
   }
-  const before = { name: organization.name, timezone: organization.timezone, gstin: organization.gstin };
+  const before = { name: organization.name, legalName: organization.legalName, address: organization.address, timezone: organization.timezone, gstin: organization.gstin, showGuides: organization.showGuides ?? true };
   if (input.name !== undefined) {
     organization.name = input.name;
   }
@@ -347,20 +348,25 @@ export async function updateOwnOrganization(
   if (input.timezone !== undefined) {
     organization.timezone = input.timezone;
   }
+  if (input.showGuides !== undefined) organization.showGuides = input.showGuides;
   if (input.settings) {
     organization.settings = { ...presentSettings(organization.settings), ...input.settings };
     organization.markModified("settings");
   }
   await organization.save();
-  await recordAudit({
-    actor,
-    action: "organization.updated",
-    entityType: "organization",
-    entityId: organization._id.toString(),
-    organizationId: organization._id.toString(),
-    before,
-    after: { name: organization.name, timezone: organization.timezone, gstin: organization.gstin },
-    meta,
-  });
+  try {
+    await recordAudit({
+      actor,
+      action: "organization.updated",
+      entityType: "organization",
+      entityId: organization._id.toString(),
+      organizationId: organization._id.toString(),
+      before,
+      after: { name: organization.name, legalName: organization.legalName, address: organization.address, timezone: organization.timezone, gstin: organization.gstin, showGuides: organization.showGuides },
+      meta,
+    });
+  } catch (error) {
+    console.error("Could not record organization update audit event", { organizationId: organization._id.toString(), error });
+  }
   return presentOrganization(organization._id.toString());
 }

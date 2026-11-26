@@ -1,23 +1,19 @@
-import { MongoMemoryReplSet } from "mongodb-memory-server";
+import "dotenv/config";
 import { createApp } from "./app.js";
 import { loadEnv } from "./config/env.js";
 import { createLogger } from "./config/logger.js";
 import { connectDatabase, disconnectDatabase, isDatabaseConnected } from "./database/connection.js";
 import { ensureSuperAdmin, migrateLegacyRoles } from "./modules/auth/auth.service.js";
 import { createOrganization } from "./modules/organizations/organization.service.js";
-import { UserModel } from "./modules/users/user.model.js";
+import { eq } from "drizzle-orm";
+import { db } from "./database/connection.js";
+import { databaseOptions } from "./database/options.js";
+import { users } from "./database/schema.js";
 
 const env = loadEnv();
 const logger = createLogger(env.LOG_LEVEL);
 
-logger.info("Starting local in-memory MongoDB replica set for development...");
-
-const replSet = await MongoMemoryReplSet.create({
-  replSet: { count: 1, storageEngine: "wiredTiger" },
-});
-
-const uri = replSet.getUri();
-logger.info({ uri }, "In-memory MongoDB replica set started");
+logger.info("Starting development server against DATABASE_URL (seeds a demo organization)...");
 
 const app = createApp({
   logger,
@@ -31,8 +27,8 @@ const app = createApp({
   },
 });
 
-await connectDatabase(uri);
-logger.info("Mongoose connected to in-memory database");
+await connectDatabase(databaseOptions(env));
+logger.info("PostgreSQL connected and migrated");
 await migrateLegacyRoles();
 
 // Ensure Super Admin
@@ -43,14 +39,14 @@ await ensureSuperAdmin({
 });
 
 // Seed default demo Organization & Org Admin if not present
-const superAdmin = await UserModel.findOne({ email: (env.SUPER_ADMIN_EMAIL || "admin@example.com").toLowerCase() });
+const [superAdmin] = await db.select({ id: users.id }).from(users).where(eq(users.email, (env.SUPER_ADMIN_EMAIL || "admin@example.com").toLowerCase())).limit(1);
 if (superAdmin) {
-  const existingOrg = await UserModel.findOne({ email: "demo@example.com" });
+  const [existingOrg] = await db.select({ id: users.id }).from(users).where(eq(users.email, "demo@example.com")).limit(1);
   if (!existingOrg) {
     try {
       await createOrganization(
         {
-          userId: superAdmin._id.toString(),
+          userId: superAdmin.id,
           role: "super_admin",
           organizationId: null,
           tokenVersion: 0,
@@ -92,7 +88,6 @@ const server = app.listen(env.PORT, () => {
 function shutdown(): void {
   server.close(async () => {
     await disconnectDatabase();
-    await replSet.stop();
     process.exit(0);
   });
 }

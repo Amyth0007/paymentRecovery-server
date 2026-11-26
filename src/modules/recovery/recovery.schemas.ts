@@ -1,10 +1,6 @@
 import { z } from "zod";
 import { objectIdSchema } from "../../common/validators/schemas.js";
-import {
-  ASSIGNMENT_STATUSES,
-  RECOVERY_PRIORITIES,
-} from "./recovery-assignment.model.js";
-import { VISIT_OUTCOMES } from "./recovery-visit.model.js";
+import { ASSIGNMENT_STATUSES, RECOVERY_PRIORITIES, VISIT_OUTCOMES } from "../../database/schema.js";
 
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 

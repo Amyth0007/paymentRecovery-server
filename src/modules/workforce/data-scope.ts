@@ -1,33 +1,45 @@
+import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type { AuthContext } from "../../common/auth/auth-context.js";
 import { AppError } from "../../common/errors/app-error.js";
-import { Types } from "mongoose";
-import { WorkforceEmployeeModel } from "./employee.model.js";
+import { db } from "../../database/connection.js";
+import { workforceEmployees } from "../../database/schema.js";
+
+/** True when the actor is a sub-admin with a "selected" workforce scope (i.e. not organization-wide). */
+export function isWorkforceScopeRestricted(actor: AuthContext): boolean {
+  const scope = actor.workforceScope;
+  return actor.role === "sub_admin" && Boolean(scope) && scope!.mode !== "organization";
+}
 
 /**
  * A selected workforce scope is the intersection of every populated dimension.
  * Empty dimensions are unrestricted; a selected scope with no dimensions is denied.
+ *
+ * Returns a condition on `workforceEmployees` to AND into a query, or `undefined` when the actor
+ * has organization-wide access (no restriction). A restricted scope with no dimensions yields `false`.
  */
-export function workforceEmployeeScopeFilter(actor: AuthContext): Record<string, unknown> {
-  const scope = actor.workforceScope;
-  if (actor.role !== "sub_admin" || !scope || scope.mode === "organization") return {};
-  const clauses: Record<string, unknown>[] = [];
-  if (scope.departmentIds.length) clauses.push({ departmentId: { $in: scope.departmentIds.map((id) => new Types.ObjectId(id)) } });
-  if (scope.locationIds.length) clauses.push({ workLocationId: { $in: scope.locationIds.map((id) => new Types.ObjectId(id)) } });
-  return clauses.length ? { $and: clauses } : { _id: { $exists: false } };
+export function workforceEmployeeScopeCondition(actor: AuthContext): SQL | undefined {
+  if (!isWorkforceScopeRestricted(actor)) return undefined;
+  const scope = actor.workforceScope!;
+  const clauses: SQL[] = [];
+  if (scope.departmentIds.length) clauses.push(inArray(workforceEmployees.departmentId, scope.departmentIds));
+  if (scope.locationIds.length) clauses.push(inArray(workforceEmployees.workLocationId, scope.locationIds));
+  return clauses.length ? and(...clauses)! : sql`false`;
 }
 
-export async function accessibleWorkforceEmployeeIds(organizationId: string, actor: AuthContext): Promise<Types.ObjectId[] | null> {
-  const filter = workforceEmployeeScopeFilter(actor);
-  if (!Object.keys(filter).length) return null;
-  const employees = await WorkforceEmployeeModel.find({ organizationId, ...filter }).select("_id").lean();
-  return employees.map((employee) => employee._id as Types.ObjectId);
+export async function accessibleWorkforceEmployeeIds(organizationId: string, actor: AuthContext): Promise<string[] | null> {
+  const condition = workforceEmployeeScopeCondition(actor);
+  if (!condition) return null;
+  const employees = await db.select({ id: workforceEmployees.id }).from(workforceEmployees)
+    .where(and(eq(workforceEmployees.organizationId, organizationId), condition));
+  return employees.map((employee) => employee.id);
 }
 
 export async function assertWorkforceEmployeeAccessible(organizationId: string, actor: AuthContext, employeeId: string) {
-  const filter = workforceEmployeeScopeFilter(actor);
-  if (!Object.keys(filter).length) return;
-  const exists = await WorkforceEmployeeModel.exists({ _id: employeeId, organizationId, ...filter });
-  if (!exists) throw new AppError("NOT_FOUND", "Employee was not found in your assigned workforce scope", 404);
+  const condition = workforceEmployeeScopeCondition(actor);
+  if (!condition) return;
+  const rows = await db.select({ id: workforceEmployees.id }).from(workforceEmployees)
+    .where(and(eq(workforceEmployees.id, employeeId), eq(workforceEmployees.organizationId, organizationId), condition)).limit(1);
+  if (!rows.length) throw new AppError("NOT_FOUND", "Employee was not found in your assigned workforce scope", 404);
 }
 
 export function assertWorkforceAssignmentWithinScope(actor: AuthContext, departmentId?: string | null, locationId?: string | null) {

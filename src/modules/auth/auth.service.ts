@@ -4,7 +4,9 @@ import type { loginSchema } from "../../common/validators/schemas.js";
 import type { z } from "zod";
 import { assertTenantAccessible } from "../organizations/organization.service.js";
 import { presentSessionUser } from "../users/user.service.js";
-import { UserModel } from "../users/user.model.js";
+import { eq, sql } from "drizzle-orm";
+import { db } from "../../database/connection.js";
+import { users } from "../../database/schema.js";
 import {
   accessTokenFor,
   hashNewPassword,
@@ -21,22 +23,22 @@ const invalidCredentials = new AppError("UNAUTHORIZED", "Invalid email or passwo
 
 async function sessionFor(
   user: {
-    _id: { toString(): string };
-    role: Role;
-    organizationId?: { toString(): string } | null;
+    id: string;
+    role: Role | string;
+    organizationId?: string | null;
     tokenVersion: number;
   },
   config: AuthConfig,
   familyId?: string,
 ) {
-  const refresh = await issueRefreshToken(user._id.toString(), config, familyId);
+  const refresh = await issueRefreshToken(user.id, config, familyId);
   const accessToken = await accessTokenFor(user, config);
-  const profile = await presentSessionUser(user._id.toString());
+  const profile = await presentSessionUser(user.id);
   return { accessToken, refreshToken: refresh.raw, user: profile };
 }
 
 export async function login(input: LoginInput, config: AuthConfig) {
-  const user = await UserModel.findOne({ email: input.email });
+  const [user] = await db.select().from(users).where(eq(users.email, input.email.trim().toLowerCase())).limit(1);
   if (!user) {
     throw invalidCredentials;
   }
@@ -45,10 +47,10 @@ export async function login(input: LoginInput, config: AuthConfig) {
     throw invalidCredentials;
   }
   if (user.organizationId) {
-    await assertTenantAccessible(user.organizationId.toString());
+    await assertTenantAccessible(user.organizationId);
   }
   user.lastLoginAt = new Date();
-  await user.save();
+  await db.update(users).set({ lastLoginAt: user.lastLoginAt }).where(eq(users.id, user.id));
   return sessionFor(user, config);
 }
 
@@ -58,10 +60,10 @@ export async function refresh(rawToken: string | undefined, config: AuthConfig) 
   }
   const rotated = await rotateRefreshToken(rawToken, config);
   if (rotated.user.organizationId) {
-    await assertTenantAccessible(rotated.user.organizationId.toString());
+    await assertTenantAccessible(rotated.user.organizationId);
   }
   const accessToken = await accessTokenFor(rotated.user, config);
-  const profile = await presentSessionUser(rotated.user._id.toString());
+  const profile = await presentSessionUser(rotated.user.id);
   return { accessToken, refreshToken: rotated.refreshToken, user: profile };
 }
 
@@ -81,13 +83,14 @@ export async function ensureSuperAdmin(input: {
   if (!input.email || !input.password) {
     return;
   }
-  const existing = await UserModel.findOne({ email: input.email.toLowerCase() });
+  const email = input.email.trim().toLowerCase();
+  const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
   if (existing) {
     return;
   }
-  await UserModel.create({
+  await db.insert(users).values({
     organizationId: null,
-    email: input.email.toLowerCase(),
+    email,
     name: input.name?.trim() || "Platform Admin",
     passwordHash: await hashNewPassword(input.password),
     role: "super_admin",
@@ -98,26 +101,20 @@ export async function ensureSuperAdmin(input: {
 }
 
 export async function migrateLegacyRoles(): Promise<void> {
-  await UserModel.collection.updateMany(
-    { mustChangePassword: true },
-    { $set: { mustChangePassword: false } },
-  );
-  await UserModel.collection.updateMany(
-    { role: "recovery_manager" },
-    { $set: { role: "accounts_manager" } },
-  );
+  // Each statement is an indexed-or-tiny UPDATE that touches no rows on a fresh database.
+  await db.update(users).set({ mustChangePassword: false }).where(eq(users.mustChangePassword, true));
+  await db.update(users).set({ role: "accounts_manager" }).where(eq(users.role, "recovery_manager"));
 
-  const oldViewers = await UserModel.collection
-    .find({ role: "viewer" }, { projection: { _id: 1 } })
-    .toArray();
+  const oldViewers = await db
+    .update(users)
+    .set({
+      role: "field_recovery",
+      status: "disabled",
+      mustChangePassword: false,
+      tokenVersion: sql`${users.tokenVersion} + 1`,
+    })
+    .where(eq(users.role, "viewer"))
+    .returning({ id: users.id });
   if (oldViewers.length === 0) return;
-
-  await UserModel.collection.updateMany(
-    { _id: { $in: oldViewers.map((user) => user._id) } },
-    {
-      $set: { role: "field_recovery", status: "disabled", mustChangePassword: false },
-      $inc: { tokenVersion: 1 },
-    },
-  );
-  await Promise.all(oldViewers.map((user) => revokeAllRefreshTokens(String(user._id))));
+  await Promise.all(oldViewers.map((user) => revokeAllRefreshTokens(user.id)));
 }

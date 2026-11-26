@@ -4,15 +4,12 @@ import path from "node:path";
 import type { AuthContext } from "../../common/auth/auth-context.js";
 import { AppError } from "../../common/errors/app-error.js";
 import { loadEnv } from "../../config/env.js";
-import { CustomerModel } from "../customers/customer.model.js";
-import { FileAssetModel } from "../files/file-asset.model.js";
-import { InvoiceModel } from "../invoices/invoice.model.js";
-import { UserModel } from "../users/user.model.js";
+import { and, eq, gt, inArray, lte } from "drizzle-orm";
+import { isUuid } from "../../common/utils/db.js";
+import { db } from "../../database/connection.js";
+import { customers, fileAssets, gmailConnections, gmailEmails, gmailOAuthStates, invoices, users } from "../../database/schema.js";
 import { assertTenantAccessible } from "../organizations/organization.service.js";
 import { assertModuleEnabled } from "../../common/middleware/module-guards.js";
-import { GmailConnectionModel } from "./gmail-connection.model.js";
-import { GmailEmailModel } from "./gmail-email.model.js";
-import { GmailOAuthStateModel } from "./gmail-oauth-state.model.js";
 
 const GOOGLE_AUTH = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN = "https://oauth2.googleapis.com/token";
@@ -84,7 +81,13 @@ async function googleJson<T>(url: string, init: RequestInit): Promise<T> {
 }
 
 export async function gmailConnectionStatus(organizationId: string) {
-  const connection = await GmailConnectionModel.findOne({ organizationId }).select("email status connectedAt lastSuccessfulEmailAt");
+  const [connection] = isUuid(organizationId)
+    ? await db
+        .select({ email: gmailConnections.email, status: gmailConnections.status, connectedAt: gmailConnections.connectedAt, lastSuccessfulEmailAt: gmailConnections.lastSuccessfulEmailAt })
+        .from(gmailConnections)
+        .where(eq(gmailConnections.organizationId, organizationId))
+        .limit(1)
+    : [];
   return connection ? {
     connected: connection.status === "connected",
     status: connection.status,
@@ -97,7 +100,9 @@ export async function gmailConnectionStatus(organizationId: string) {
 export async function beginGmailAuthorization(actor: AuthContext) {
   const config = settings();
   const state = randomBytes(32).toString("base64url");
-  await GmailOAuthStateModel.create({
+  // Replaces Mongo's TTL index: drop expired states opportunistically.
+  await db.delete(gmailOAuthStates).where(lte(gmailOAuthStates.expiresAt, new Date()));
+  await db.insert(gmailOAuthStates).values({
     stateHash: stateDigest(state),
     organizationId: actor.organizationId!,
     userId: actor.userId,
@@ -118,12 +123,20 @@ export async function beginGmailAuthorization(actor: AuthContext) {
 
 export async function completeGmailAuthorization(code: string, state: string) {
   const config = settings();
-  const stateRecord = await GmailOAuthStateModel.findOneAndDelete({ stateHash: stateDigest(state), expiresAt: { $gt: new Date() } });
+  const [stateRecord] = await db
+    .delete(gmailOAuthStates)
+    .where(and(eq(gmailOAuthStates.stateHash, stateDigest(state)), gt(gmailOAuthStates.expiresAt, new Date())))
+    .returning();
+  await db.delete(gmailOAuthStates).where(lte(gmailOAuthStates.expiresAt, new Date()));
   if (!stateRecord) throw new AppError("INVALID_OAUTH_STATE", "Gmail authorization expired or could not be verified", 400);
-  const actor = await UserModel.findOne({ _id: stateRecord.userId, organizationId: stateRecord.organizationId, role: "org_admin", status: "active" });
+  const [actor] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.id, stateRecord.userId), eq(users.organizationId, stateRecord.organizationId), eq(users.role, "org_admin"), eq(users.status, "active")))
+    .limit(1);
   if (!actor) throw new AppError("FORBIDDEN", "The administrator who started Gmail authorization is no longer active", 403);
-  await assertTenantAccessible(stateRecord.organizationId.toString());
-  await assertModuleEnabled(stateRecord.organizationId.toString(), "gmail");
+  await assertTenantAccessible(stateRecord.organizationId);
+  await assertModuleEnabled(stateRecord.organizationId, "gmail");
   const token = await googleJson<{ access_token?: string; refresh_token?: string; scope?: string }>(GOOGLE_TOKEN, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -131,7 +144,7 @@ export async function completeGmailAuthorization(code: string, state: string) {
   });
   if (!token.access_token) throw new AppError("GMAIL_PROVIDER_ERROR", "Google did not return an access token", 502);
   if (token.scope && !token.scope.split(/\s+/).includes(GMAIL_SEND_SCOPE)) {
-    await GmailConnectionModel.updateOne({ organizationId: stateRecord.organizationId }, { $set: { status: "reauthorization_required" } });
+    await db.update(gmailConnections).set({ status: "reauthorization_required" }).where(eq(gmailConnections.organizationId, stateRecord.organizationId));
     throw new AppError("GMAIL_SEND_SCOPE_MISSING", "Google did not grant Gmail send permission. Disconnect Gmail, then reconnect and approve the send permission.", 403);
   }
   const account = await googleJson<{ sub: string; email: string; email_verified: boolean }>("https://openidconnect.googleapis.com/v1/userinfo", {
@@ -142,26 +155,40 @@ export async function completeGmailAuthorization(code: string, state: string) {
   }
   const refreshToken = token.refresh_token;
   if (!refreshToken) throw new AppError("GMAIL_REFRESH_TOKEN_MISSING", "Google did not issue a fresh refresh token. Disconnect Gmail in Settings, then reconnect and approve the send permission.", 400);
-  await GmailConnectionModel.findOneAndUpdate(
-    { organizationId: stateRecord.organizationId },
-    { $set: { provider: "google", connectedByUserId: stateRecord.userId, googleAccountId: account.sub, email: account.email, encryptedRefreshToken: encryptToken(refreshToken, config.encryptionKey), status: "connected", connectedAt: new Date() } },
-    { upsert: true, new: true, runValidators: true },
-  );
+  const connectionValues = {
+    provider: "google" as const,
+    connectedByUserId: stateRecord.userId,
+    googleAccountId: account.sub,
+    email: account.email.trim().toLowerCase(),
+    encryptedRefreshToken: encryptToken(refreshToken, config.encryptionKey),
+    status: "connected" as const,
+    connectedAt: new Date(),
+  };
+  await db
+    .insert(gmailConnections)
+    .values({ organizationId: stateRecord.organizationId, ...connectionValues })
+    .onConflictDoUpdate({ target: gmailConnections.organizationId, set: connectionValues });
   return config.clientOrigin;
 }
 
 export async function disconnectGmail(organizationId: string) {
   const config = settings();
-  const connection = await GmailConnectionModel.findOne({ organizationId }).select("+encryptedRefreshToken");
+  const [connection] = isUuid(organizationId)
+    ? await db
+        .select({ id: gmailConnections.id, encryptedRefreshToken: gmailConnections.encryptedRefreshToken })
+        .from(gmailConnections)
+        .where(eq(gmailConnections.organizationId, organizationId))
+        .limit(1)
+    : [];
   if (connection) {
     try {
       await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(decryptToken(connection.encryptedRefreshToken, config.encryptionKey))}`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" } });
     } catch { /* Local disconnection still takes effect if Google's revocation endpoint is unavailable. */ }
-    await connection.deleteOne();
+    await db.delete(gmailConnections).where(eq(gmailConnections.id, connection.id));
   }
 }
 
-async function accessToken(connection: { encryptedRefreshToken: string; organizationId: { toString(): string } }) {
+async function accessToken(connection: { encryptedRefreshToken: string; organizationId: string }) {
   const config = settings();
   const refreshToken = decryptToken(connection.encryptedRefreshToken, config.encryptionKey);
   const result = await fetch(GOOGLE_TOKEN, {
@@ -171,7 +198,7 @@ async function accessToken(connection: { encryptedRefreshToken: string; organiza
   const payload = await result.json() as { access_token?: string; error?: string; error_description?: string };
   if (!result.ok || !payload.access_token) {
     if (payload.error === "invalid_grant") {
-      await GmailConnectionModel.updateOne({ organizationId: connection.organizationId.toString() }, { $set: { status: "reauthorization_required" } });
+      await db.update(gmailConnections).set({ status: "reauthorization_required" }).where(eq(gmailConnections.organizationId, connection.organizationId));
       throw new AppError("GMAIL_REAUTH_REQUIRED", "Gmail authorization has expired or was revoked. Reconnect Gmail in Settings.", 409);
     }
     throw new AppError("GMAIL_PROVIDER_ERROR", payload.error_description || payload.error || `Google returned ${result.status}`, 502);
@@ -186,7 +213,13 @@ function base64Url(input: Buffer | string) { return Buffer.from(input).toString(
 
 async function invoiceAttachment(organizationId: string, fileId: string | null) {
   if (!fileId) return null;
-  const file = await FileAssetModel.findOne({ _id: fileId, organizationId, purpose: "invoice_document" });
+  const [file] = isUuid(fileId)
+    ? await db
+        .select()
+        .from(fileAssets)
+        .where(and(eq(fileAssets.id, fileId), eq(fileAssets.organizationId, organizationId), eq(fileAssets.purpose, "invoice_document")))
+        .limit(1)
+    : [];
   if (!file) throw new AppError("NOT_FOUND", "Invoice document not found for this organization", 404);
   const localPath = file.storagePath ? path.resolve(UPLOAD_ROOT, file.storagePath) : null;
   let content: Buffer;
@@ -207,9 +240,15 @@ type SendEmailInput = { customerId: string; invoiceId?: string; recipientEmail: 
 
 export async function sendGmail(actor: AuthContext, input: SendEmailInput) {
   const organizationId = actor.organizationId!;
-  const [connection, customer] = await Promise.all([
-    GmailConnectionModel.findOne({ organizationId, status: { $in: ["connected", "reauthorization_required"] } }).select("+encryptedRefreshToken"),
-    CustomerModel.findOne({ _id: input.customerId, organizationId }),
+  const [[connection], [customer]] = await Promise.all([
+    db
+      .select()
+      .from(gmailConnections)
+      .where(and(eq(gmailConnections.organizationId, organizationId), inArray(gmailConnections.status, ["connected", "reauthorization_required"])))
+      .limit(1),
+    isUuid(input.customerId)
+      ? db.select({ id: customers.id }).from(customers).where(and(eq(customers.id, input.customerId), eq(customers.organizationId, organizationId))).limit(1)
+      : Promise.resolve([]),
   ]);
   if (!customer) throw new AppError("NOT_FOUND", "Customer not found for this organization", 404);
   if (!connection) throw new AppError("GMAIL_NOT_CONNECTED", "Connect Gmail in Settings before sending email", 409);
@@ -218,12 +257,22 @@ export async function sendGmail(actor: AuthContext, input: SendEmailInput) {
   if (!input.subject.trim() || input.subject.length > 998 || !input.body.trim() || input.body.length > 100_000) throw new AppError("VALIDATION_ERROR", "Subject and email body are required and must fit within the allowed length", 400);
 
   const invoice = input.invoiceId
-    ? await InvoiceModel.findOne({ _id: input.invoiceId, organizationId, customerId: customer._id }).select("primaryFileAssetId customerId")
+    ? (isUuid(input.invoiceId)
+        ? (await db
+            .select({ id: invoices.id, primaryFileAssetId: invoices.primaryFileAssetId, customerId: invoices.customerId })
+            .from(invoices)
+            .where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, organizationId), eq(invoices.customerId, customer.id)))
+            .limit(1))[0] ?? null
+        : null)
     : null;
   if (input.invoiceId && !invoice) throw new AppError("NOT_FOUND", "Invoice not found for this customer and organization", 404);
 
   const attachment = await invoiceAttachment(organizationId, invoice?.primaryFileAssetId ? String(invoice.primaryFileAssetId) : null);
-  const history = await GmailEmailModel.create({ organizationId, userId: actor.userId, customerId: customer._id, invoiceId: invoice ? invoice._id : null, senderEmail: connection.email, recipientEmail: recipient, subject: input.subject.trim(), body: input.body, sentAt: new Date(), status: "failed", failureReason: "Sending is in progress" });
+  const [history] = await db
+    .insert(gmailEmails)
+    .values({ organizationId, userId: actor.userId, customerId: customer.id, invoiceId: invoice ? invoice.id : null, senderEmail: connection.email.trim().toLowerCase(), recipientEmail: recipient, subject: input.subject.trim(), body: input.body, sentAt: new Date(), status: "failed", failureReason: "Sending is in progress" })
+    .returning({ id: gmailEmails.id, sentAt: gmailEmails.sentAt });
+  if (!history) throw new Error("Gmail history insert returned no row");
   try {
     if (connection.status === "reauthorization_required") throw new AppError("GMAIL_REAUTH_REQUIRED", "Reconnect Gmail in Settings before sending email", 409);
     const token = await accessToken(connection);
@@ -245,20 +294,19 @@ export async function sendGmail(actor: AuthContext, input: SendEmailInput) {
       method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ raw: base64Url(mime) }),
     });
-    history.status = "sent";
-    history.gmailMessageId = sent.id;
-    history.failureReason = null;
-    await history.save();
-    await GmailConnectionModel.updateOne({ _id: connection._id }, { $set: { lastSuccessfulEmailAt: new Date() } });
-    return { id: history._id.toString(), gmailMessageId: sent.id, sentAt: history.sentAt };
+    await db.update(gmailEmails).set({ status: "sent", gmailMessageId: sent.id, failureReason: null }).where(eq(gmailEmails.id, history.id));
+    await db.update(gmailConnections).set({ lastSuccessfulEmailAt: new Date() }).where(eq(gmailConnections.id, connection.id));
+    return { id: history.id, gmailMessageId: sent.id, sentAt: history.sentAt };
   } catch (error) {
     let reportedError = error;
     if (error instanceof AppError && error.code === "GMAIL_PROVIDER_ERROR" && error.message.toLowerCase().includes("insufficient authentication scopes")) {
-      await GmailConnectionModel.updateOne({ _id: connection._id }, { $set: { status: "reauthorization_required" } });
+      await db.update(gmailConnections).set({ status: "reauthorization_required" }).where(eq(gmailConnections.id, connection.id));
       reportedError = new AppError("GMAIL_REAUTH_REQUIRED", "This Gmail connection lacks the gmail.send permission. Disconnect Gmail, then reconnect and approve the send permission.", 409);
     }
-    history.failureReason = reportedError instanceof Error ? reportedError.message.slice(0, 1000) : "Gmail send failed";
-    await history.save();
+    await db
+      .update(gmailEmails)
+      .set({ failureReason: reportedError instanceof Error ? reportedError.message.slice(0, 1000) : "Gmail send failed" })
+      .where(eq(gmailEmails.id, history.id));
     throw reportedError;
   }
 }

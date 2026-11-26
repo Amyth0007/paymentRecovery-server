@@ -5,7 +5,10 @@ import { createHash } from "node:crypto";
 import { loadEnv } from "../../config/env.js";
 import type { AuthContext } from "../../common/auth/auth-context.js";
 import { AppError } from "../../common/errors/app-error.js";
-import { FileAssetModel, type FILE_PURPOSES } from "./file-asset.model.js";
+import { and, eq } from "drizzle-orm";
+import { isUuid } from "../../common/utils/db.js";
+import { db } from "../../database/connection.js";
+import { fileAssets, type FILE_PURPOSES } from "../../database/schema.js";
 import { recordAudit, type RequestMeta } from "../audit-logs/audit.service.js";
 
 const UPLOAD_ROOT = path.resolve(process.cwd(), "uploads");
@@ -60,30 +63,31 @@ export async function saveUploadedFile(
   storagePath = path.join(organizationId, purpose, storedName);
   }
 
-  const fileAsset = await FileAssetModel.create({
+  const [fileAsset] = await db.insert(fileAssets).values({
     organizationId,
     purpose,
-    originalFilename: file.originalname,
+    originalFilename: file.originalname.trim(),
     mimeType: file.mimetype,
     sizeBytes: file.size,
     storagePath,
     storageUrl,
     cloudinaryPublicId,
     uploadedBy: actor.userId,
-  });
+  }).returning();
+  if (!fileAsset) throw new Error("File asset insert returned no row");
 
   await recordAudit({
     actor,
     action: "file.uploaded",
     entityType: "file",
-    entityId: fileAsset._id.toString(),
+    entityId: fileAsset.id,
     organizationId,
     after: { purpose, filename: file.originalname, sizeBytes: file.size },
     meta,
   });
 
   return {
-    id: fileAsset._id.toString(),
+    id: fileAsset.id,
     purpose: fileAsset.purpose,
     originalFilename: fileAsset.originalFilename,
     mimeType: fileAsset.mimeType,
@@ -92,8 +96,11 @@ export async function saveUploadedFile(
   };
 }
 
+/** `fileAsset` is the file_assets row (`id` instead of the former Mongoose `_id`). */
 export async function getFileAsset(organizationId: string, fileId: string) {
-  const fileAsset = await FileAssetModel.findOne({ _id: fileId, organizationId });
+  const [fileAsset] = isUuid(fileId) && isUuid(organizationId)
+    ? await db.select().from(fileAssets).where(and(eq(fileAssets.id, fileId), eq(fileAssets.organizationId, organizationId))).limit(1)
+    : [];
   if (!fileAsset) {
     throw new AppError("NOT_FOUND", "File asset not found", 404);
   }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { objectIdSchema } from "../../common/validators/schemas.js";
-import { COMMITMENT_STATUSES } from "./commitment.model.js";
+import { COMMITMENT_STATUSES } from "../../database/schema.js";
 
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 

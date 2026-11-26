@@ -6,11 +6,12 @@ import { asyncHandler } from "../../common/middleware/async-handler.js";
 import { requireEnabledModule } from "../../common/middleware/module-guards.js";
 import { createRequireAuth, requireActionPermission, requirePasswordChanged, requireRole, requireTenant } from "../../common/middleware/auth-guards.js";
 import { sendSuccess } from "../../common/utils/api-response.js";
+import { objectIdSchema } from "../../common/validators/schemas.js";
 import { beginGmailAuthorization, completeGmailAuthorization, disconnectGmail, gmailConnectionStatus, sendGmail } from "./gmail.service.js";
 
 const sendEmailSchema = z.object({
-  customerId: z.string().regex(/^[a-f\d]{24}$/i),
-  invoiceId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  customerId: objectIdSchema,
+  invoiceId: objectIdSchema.optional(),
   recipientEmail: z.email().max(254),
   subject: z.string().trim().min(1).max(998),
   body: z.string().trim().min(1).max(100_000),

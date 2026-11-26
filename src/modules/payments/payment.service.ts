@@ -1,13 +1,18 @@
-type QueryFilter = Record<string, any>;
+import { and, asc, desc, eq, gte, inArray, isNull, lte, sql, type SQL } from "drizzle-orm";
 import type { z } from "zod";
 import type { AuthContext } from "../../common/auth/auth-context.js";
 import { AppError } from "../../common/errors/app-error.js";
-import { isDuplicateKey } from "../../common/utils/mongo.js";
+import { isDuplicateKey } from "../../common/utils/db.js";
+import { db, type DbOrTx } from "../../database/connection.js";
+import {
+  customers,
+  invoices,
+  ledgerEntries,
+  paymentAllocations,
+  payments,
+  users,
+} from "../../database/schema.js";
 import { recordAudit, type RequestMeta } from "../audit-logs/audit.service.js";
-import { CustomerModel } from "../customers/customer.model.js";
-import { InvoiceModel } from "../invoices/invoice.model.js";
-import { LedgerEntryModel } from "../invoices/ledger-entry.model.js";
-import { PaymentModel } from "./payment.model.js";
 import type {
   createPaymentSchema,
   paymentListQuerySchema,
@@ -17,45 +22,109 @@ import type {
 type CreatePaymentInput = z.infer<typeof createPaymentSchema>;
 type ReverseInput = z.infer<typeof reversePaymentSchema>;
 type ListQuery = z.infer<typeof paymentListQuerySchema>;
+type PaymentRow = typeof payments.$inferSelect;
 
-export function presentPayment(payment: any) {
+/** A payment allocation as it used to be embedded on the payment document. */
+export type PaymentAllocationView = {
+  invoiceId: string;
+  bucket: string;
+  amountMinor: number;
+  /** Present only when the invoice reference was populated. */
+  invoiceNumber?: string;
+};
+
+type PopulatedCustomer = { id: string; displayName: string; companyName: string };
+
+/**
+ * Builds the payment DTO. `allocations` come from the `paymentAllocations` child table (ordered by
+ * position). Pass `customer` to reproduce the old populated `customerId` output.
+ */
+export function presentPayment(
+  payment: PaymentRow,
+  allocations: PaymentAllocationView[],
+  customer?: PopulatedCustomer | null,
+) {
   return {
-    id: payment._id.toString(),
-    customerId: payment.customerId?._id
-      ? payment.customerId._id.toString()
-      : payment.customerId?.toString(),
-    customer: payment.customerId?._id
+    id: payment.id,
+    customerId: payment.customerId,
+    customer: customer
       ? {
-          id: payment.customerId._id.toString(),
-          displayName: payment.customerId.displayName,
-          companyName: payment.customerId.companyName,
+          id: customer.id,
+          displayName: customer.displayName,
+          companyName: customer.companyName,
         }
       : undefined,
     kind: payment.kind,
-    reversesPaymentId: payment.reversesPaymentId
-      ? payment.reversesPaymentId.toString()
-      : null,
+    reversesPaymentId: payment.reversesPaymentId ?? null,
     paymentReference: payment.paymentReference,
     paymentDate: payment.paymentDate,
     mode: payment.mode,
     transactionReference: payment.transactionReference ?? "",
     amountMinor: payment.amountMinor,
     currency: payment.currency,
-    allocations: (payment.allocations ?? []).map((a: any) => ({
-      invoiceId: a.invoiceId?._id ? a.invoiceId._id.toString() : a.invoiceId?.toString(),
-      invoiceNumber: a.invoiceId?.invoiceNumber,
+    allocations: allocations.map((a) => ({
+      invoiceId: a.invoiceId,
+      invoiceNumber: a.invoiceNumber,
       bucket: a.bucket,
       amountMinor: a.amountMinor,
     })),
-    fileAssetIds: (payment.fileAssetIds ?? []).map((f: any) =>
-      f._id ? f._id.toString() : f.toString(),
-    ),
+    fileAssetIds: payment.fileAssetIds ?? [],
     remarks: payment.remarks ?? "",
     status: payment.status,
     idempotencyKey: payment.idempotencyKey,
     reversedAt: payment.reversedAt ?? null,
     createdAt: payment.createdAt,
   };
+}
+
+/** Loads allocations for the given payments, grouped by payment id and ordered by position. */
+async function loadAllocations(
+  paymentIds: string[],
+  options: { withInvoiceNumber?: boolean } = {},
+  executor: DbOrTx = db,
+): Promise<Map<string, PaymentAllocationView[]>> {
+  const grouped = new Map<string, PaymentAllocationView[]>();
+  if (!paymentIds.length) return grouped;
+
+  const rows = await executor
+    .select({
+      paymentId: paymentAllocations.paymentId,
+      invoiceId: paymentAllocations.invoiceId,
+      bucket: paymentAllocations.bucket,
+      amountMinor: paymentAllocations.amountMinor,
+      invoiceNumber: invoices.invoiceNumber,
+    })
+    .from(paymentAllocations)
+    .leftJoin(invoices, eq(invoices.id, paymentAllocations.invoiceId))
+    .where(inArray(paymentAllocations.paymentId, paymentIds))
+    .orderBy(asc(paymentAllocations.paymentId), asc(paymentAllocations.position));
+
+  for (const row of rows) {
+    const allocation: PaymentAllocationView = {
+      invoiceId: row.invoiceId,
+      bucket: row.bucket,
+      amountMinor: row.amountMinor,
+    };
+    if (options.withInvoiceNumber && row.invoiceNumber != null) allocation.invoiceNumber = row.invoiceNumber;
+    const list = grouped.get(row.paymentId) ?? [];
+    list.push(allocation);
+    grouped.set(row.paymentId, list);
+  }
+  return grouped;
+}
+
+async function presentUnpopulatedPayment(payment: PaymentRow) {
+  const allocations = await loadAllocations([payment.id]);
+  return presentPayment(payment, allocations.get(payment.id) ?? []);
+}
+
+async function findPaymentByIdempotencyKey(organizationId: string, idempotencyKey: string) {
+  const [payment] = await db
+    .select()
+    .from(payments)
+    .where(and(eq(payments.organizationId, organizationId), eq(payments.idempotencyKey, idempotencyKey)))
+    .limit(1);
+  return payment ?? null;
 }
 
 export async function createPayment(
@@ -66,13 +135,10 @@ export async function createPayment(
   meta: RequestMeta,
 ) {
   // 1. Check idempotency key
-  const existing = await PaymentModel.findOne({ organizationId, idempotencyKey });
+  const existing = await findPaymentByIdempotencyKey(organizationId, idempotencyKey);
   if (existing) {
-    if (
-      existing.amountMinor === input.amountMinor &&
-      existing.customerId.toString() === input.customerId
-    ) {
-      return presentPayment(existing);
+    if (existing.amountMinor === input.amountMinor && existing.customerId === input.customerId) {
+      return presentUnpopulatedPayment(existing);
     }
     throw new AppError(
       "IDEMPOTENCY_CONFLICT",
@@ -82,11 +148,17 @@ export async function createPayment(
   }
 
   // 2. Validate customer
-  const customer = await CustomerModel.findOne({
-    _id: input.customerId,
-    organizationId,
-    status: "active",
-  });
+  const [customer] = await db
+    .select({ id: customers.id })
+    .from(customers)
+    .where(
+      and(
+        eq(customers.id, input.customerId),
+        eq(customers.organizationId, organizationId),
+        eq(customers.status, "active"),
+      ),
+    )
+    .limit(1);
   if (!customer) {
     throw new AppError("NOT_FOUND", "Customer not found or not active", 404);
   }
@@ -106,14 +178,19 @@ export async function createPayment(
     throw new AppError("VALIDATION_ERROR", "Allocate each invoice only once", 422);
   }
 
-  const invoices = await InvoiceModel.find({
-    _id: { $in: invoiceIds },
-    organizationId,
-    customerId: customer._id,
-    documentStatus: "issued",
-  });
+  const invoiceRows = await db
+    .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber, outstandingMinor: invoices.outstandingMinor })
+    .from(invoices)
+    .where(
+      and(
+        inArray(invoices.id, invoiceIds),
+        eq(invoices.organizationId, organizationId),
+        eq(invoices.customerId, customer.id),
+        eq(invoices.documentStatus, "issued"),
+      ),
+    );
 
-  if (invoices.length !== invoiceIds.length) {
+  if (invoiceRows.length !== invoiceIds.length) {
     throw new AppError(
       "INVALID_STATE",
       "One or more invoices do not exist, do not belong to this customer, or are not issued",
@@ -121,7 +198,7 @@ export async function createPayment(
     );
   }
 
-  const invoiceMap = new Map<string, any>(invoices.map((inv) => [inv._id.toString(), inv]));
+  const invoiceMap = new Map(invoiceRows.map((inv) => [inv.id, inv]));
   for (const alloc of input.allocations) {
     const inv = invoiceMap.get(alloc.invoiceId)!;
     if (alloc.amountMinor > inv.outstandingMinor) {
@@ -133,82 +210,94 @@ export async function createPayment(
     }
   }
 
-  let createdPayment: any;
+  const allocationViews: PaymentAllocationView[] = input.allocations.map((a) => ({
+    invoiceId: a.invoiceId,
+    bucket: "principal",
+    amountMinor: a.amountMinor,
+  }));
+
+  let createdPayment: PaymentRow;
   try {
-    createdPayment = await PaymentModel.create({
-      organizationId,
-      customerId: customer._id,
-      kind: "collection",
-      reversesPaymentId: null,
-      paymentReference: input.paymentReference,
-      paymentDate: input.paymentDate,
-      mode: input.mode,
-      transactionReference: input.transactionReference ?? "",
-      amountMinor: input.amountMinor,
-      currency: "INR",
-      allocations: input.allocations.map((a) => ({
-        invoiceId: a.invoiceId,
-        bucket: "principal",
-        amountMinor: a.amountMinor,
-      })),
-      fileAssetIds: input.fileAssetIds ?? [],
-      remarks: input.remarks ?? "",
-      status: "posted",
-      idempotencyKey,
-      reversedAt: null,
-      recordedBy: actor.userId,
+    createdPayment = await db.transaction(async (tx) => {
+      const [payment] = await tx
+        .insert(payments)
+        .values({
+          organizationId,
+          customerId: customer.id,
+          kind: "collection",
+          reversesPaymentId: null,
+          paymentReference: input.paymentReference.trim(),
+          paymentDate: input.paymentDate,
+          mode: input.mode,
+          transactionReference: (input.transactionReference ?? "").trim(),
+          amountMinor: input.amountMinor,
+          currency: "INR",
+          fileAssetIds: input.fileAssetIds ?? [],
+          remarks: (input.remarks ?? "").trim(),
+          status: "posted",
+          idempotencyKey,
+          reversedAt: null,
+          recordedBy: actor.userId,
+        })
+        .returning();
+
+      await tx.insert(paymentAllocations).values(
+        input.allocations.map((a, position) => ({
+          paymentId: payment.id,
+          organizationId,
+          position,
+          invoiceId: a.invoiceId,
+          bucket: "principal" as const,
+          amountMinor: a.amountMinor,
+        })),
+      );
+
+      for (const alloc of input.allocations) {
+        const inv = invoiceMap.get(alloc.invoiceId)!;
+        const updated = await tx
+          .update(invoices)
+          .set({
+            outstandingMinor: sql`${invoices.outstandingMinor} - ${alloc.amountMinor}`,
+            updatedBy: actor.userId,
+          })
+          .where(
+            and(
+              eq(invoices.id, inv.id),
+              eq(invoices.organizationId, organizationId),
+              eq(invoices.documentStatus, "issued"),
+              gte(invoices.outstandingMinor, alloc.amountMinor),
+            ),
+          )
+          .returning({ id: invoices.id });
+        if (updated.length !== 1) {
+          throw new AppError("INVALID_STATE", `Invoice ${inv.invoiceNumber} no longer has enough outstanding balance`, 422);
+        }
+      }
+
+      await tx.insert(ledgerEntries).values(
+        input.allocations.map((alloc) => ({
+          organizationId,
+          customerId: customer.id,
+          invoiceId: alloc.invoiceId,
+          bucket: "principal" as const,
+          type: "payment_allocation" as const,
+          amountMinor: -alloc.amountMinor,
+          paymentId: payment.id,
+          effectiveDate: input.paymentDate,
+          recordedBy: actor.userId,
+        })),
+      );
+
+      return payment;
     });
   } catch (error) {
     if (isDuplicateKey(error)) {
-      const duplicate = await PaymentModel.findOne({ organizationId, idempotencyKey });
-      if (duplicate && duplicate.amountMinor === input.amountMinor && duplicate.customerId.toString() === input.customerId) {
-        return presentPayment(duplicate);
+      const duplicate = await findPaymentByIdempotencyKey(organizationId, idempotencyKey);
+      if (duplicate && duplicate.amountMinor === input.amountMinor && duplicate.customerId === input.customerId) {
+        return presentUnpopulatedPayment(duplicate);
       }
       throw new AppError("IDEMPOTENCY_CONFLICT", "This payment request was already submitted", 409);
     }
-    throw error;
-  }
-
-  const updatedInvoiceIds: string[] = [];
-  try {
-    for (const alloc of input.allocations) {
-      const inv = invoiceMap.get(alloc.invoiceId)!;
-      const update = await InvoiceModel.updateOne(
-        {
-          _id: inv._id,
-          organizationId,
-          documentStatus: "issued",
-          outstandingMinor: { $gte: alloc.amountMinor },
-        },
-        { $inc: { outstandingMinor: -alloc.amountMinor }, $set: { updatedBy: actor.userId } },
-      );
-      if (update.modifiedCount !== 1) {
-        throw new AppError("INVALID_STATE", `Invoice ${inv.invoiceNumber} no longer has enough outstanding balance`, 422);
-      }
-      updatedInvoiceIds.push(inv._id.toString());
-
-      await LedgerEntryModel.create({
-        organizationId,
-        customerId: customer._id,
-        invoiceId: inv._id,
-        bucket: "principal",
-        type: "payment_allocation",
-        amountMinor: -alloc.amountMinor,
-        paymentId: createdPayment._id,
-        effectiveDate: input.paymentDate,
-        recordedBy: actor.userId,
-      });
-    }
-  } catch (error) {
-    await LedgerEntryModel.deleteMany({ paymentId: createdPayment._id });
-    for (const invoiceId of updatedInvoiceIds) {
-      const allocation = input.allocations.find((item) => item.invoiceId === invoiceId)!;
-      await InvoiceModel.updateOne(
-        { _id: invoiceId, organizationId, documentStatus: "issued" },
-        { $inc: { outstandingMinor: allocation.amountMinor }, $set: { updatedBy: actor.userId } },
-      );
-    }
-    await PaymentModel.deleteOne({ _id: createdPayment._id });
     throw error;
   }
 
@@ -216,7 +305,7 @@ export async function createPayment(
     actor,
     action: "payment.recorded",
     entityType: "payment",
-    entityId: createdPayment._id.toString(),
+    entityId: createdPayment.id,
     organizationId,
     after: {
       paymentReference: input.paymentReference,
@@ -226,7 +315,7 @@ export async function createPayment(
     meta,
   });
 
-  return presentPayment(createdPayment);
+  return presentPayment(createdPayment, allocationViews);
 }
 
 export async function reversePayment(
@@ -237,15 +326,23 @@ export async function reversePayment(
   idempotencyKey: string,
   meta: RequestMeta,
 ) {
-  const priorReversal = await PaymentModel.findOne({ organizationId, idempotencyKey });
-  if (priorReversal) {
-    if (priorReversal.reversesPaymentId?.toString() === paymentId) {
-      return presentPayment(priorReversal);
+  const replayPriorReversal = async () => {
+    const priorReversal = await findPaymentByIdempotencyKey(organizationId, idempotencyKey);
+    if (!priorReversal) return null;
+    if (priorReversal.reversesPaymentId === paymentId) {
+      return presentUnpopulatedPayment(priorReversal);
     }
     throw new AppError("IDEMPOTENCY_CONFLICT", "This reversal request key was already used", 409);
-  }
+  };
 
-  const original = await PaymentModel.findOne({ _id: paymentId, organizationId });
+  const prior = await replayPriorReversal();
+  if (prior) return prior;
+
+  const [original] = await db
+    .select()
+    .from(payments)
+    .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)))
+    .limit(1);
   if (!original) {
     throw new AppError("NOT_FOUND", "Payment not found", 404);
   }
@@ -258,77 +355,99 @@ export async function reversePayment(
     throw new AppError("CONFLICT", "This payment has already been reversed", 409);
   }
 
+  const originalAllocations = (await loadAllocations([original.id])).get(original.id) ?? [];
   const reversedAt = new Date();
-  const claimedOriginal = await PaymentModel.findOneAndUpdate(
-    { _id: original._id, organizationId, kind: "collection", reversedAt: null },
-    { $set: { reversedAt } },
-    { new: true },
-  );
-  if (!claimedOriginal) {
-    throw new AppError("CONFLICT", "This payment has already been reversed", 409);
-  }
-
   const paymentDate = new Date().toISOString().slice(0, 10);
-  let reversalPayment: any;
-  const restoredAllocations: Array<{ invoiceId: string; amountMinor: number }> = [];
+
+  let reversalPayment: PaymentRow;
   try {
-    reversalPayment = await PaymentModel.create({
-      organizationId,
-      customerId: original.customerId,
-      kind: "reversal",
-      reversesPaymentId: original._id,
-      paymentReference: `REV-${original.paymentReference}`,
-      paymentDate,
-      mode: original.mode,
-      transactionReference: original.transactionReference,
-      amountMinor: original.amountMinor,
-      currency: original.currency,
-      allocations: original.allocations,
-      fileAssetIds: [],
-      remarks: `Reversal: ${input.reason}`,
-      status: "posted",
-      idempotencyKey,
-      reversedAt: null,
-      recordedBy: actor.userId,
-    });
-
-    for (const alloc of original.allocations) {
-      const update = await InvoiceModel.updateOne(
-        { _id: alloc.invoiceId, organizationId },
-        { $inc: { outstandingMinor: alloc.amountMinor } },
-      );
-      if (update.matchedCount !== 1) {
-        throw new AppError("NOT_FOUND", "An invoice from this payment no longer exists", 404);
+    reversalPayment = await db.transaction(async (tx) => {
+      const [claimedOriginal] = await tx
+        .update(payments)
+        .set({ reversedAt })
+        .where(
+          and(
+            eq(payments.id, original.id),
+            eq(payments.organizationId, organizationId),
+            eq(payments.kind, "collection"),
+            isNull(payments.reversedAt),
+          ),
+        )
+        .returning({ id: payments.id });
+      if (!claimedOriginal) {
+        throw new AppError("CONFLICT", "This payment has already been reversed", 409);
       }
-      restoredAllocations.push({ invoiceId: alloc.invoiceId.toString(), amountMinor: alloc.amountMinor });
 
-      await LedgerEntryModel.create({
-        organizationId,
-        customerId: original.customerId,
-        invoiceId: alloc.invoiceId,
-        bucket: "principal",
-        type: "payment_reversal",
-        amountMinor: alloc.amountMinor,
-        paymentId: reversalPayment._id,
-        effectiveDate: paymentDate,
-        recordedBy: actor.userId,
-      });
-    }
+      const [reversal] = await tx
+        .insert(payments)
+        .values({
+          organizationId,
+          customerId: original.customerId,
+          kind: "reversal",
+          reversesPaymentId: original.id,
+          paymentReference: `REV-${original.paymentReference}`.trim(),
+          paymentDate,
+          mode: original.mode,
+          transactionReference: original.transactionReference,
+          amountMinor: original.amountMinor,
+          currency: original.currency,
+          fileAssetIds: [],
+          remarks: `Reversal: ${input.reason}`.trim(),
+          status: "posted",
+          idempotencyKey,
+          reversedAt: null,
+          recordedBy: actor.userId,
+        })
+        .returning();
+
+      if (originalAllocations.length) {
+        await tx.insert(paymentAllocations).values(
+          originalAllocations.map((alloc, position) => ({
+            paymentId: reversal.id,
+            organizationId,
+            position,
+            invoiceId: alloc.invoiceId,
+            bucket: "principal" as const,
+            amountMinor: alloc.amountMinor,
+          })),
+        );
+      }
+
+      for (const alloc of originalAllocations) {
+        const updated = await tx
+          .update(invoices)
+          .set({ outstandingMinor: sql`${invoices.outstandingMinor} + ${alloc.amountMinor}` })
+          .where(and(eq(invoices.id, alloc.invoiceId), eq(invoices.organizationId, organizationId)))
+          .returning({ id: invoices.id });
+        if (updated.length !== 1) {
+          throw new AppError("NOT_FOUND", "An invoice from this payment no longer exists", 404);
+        }
+      }
+
+      if (originalAllocations.length) {
+        await tx.insert(ledgerEntries).values(
+          originalAllocations.map((alloc) => ({
+            organizationId,
+            customerId: original.customerId,
+            invoiceId: alloc.invoiceId,
+            bucket: "principal" as const,
+            type: "payment_reversal" as const,
+            amountMinor: alloc.amountMinor,
+            paymentId: reversal.id,
+            effectiveDate: paymentDate,
+            recordedBy: actor.userId,
+          })),
+        );
+      }
+
+      return reversal;
+    });
   } catch (error) {
-    if (reversalPayment) {
-      await LedgerEntryModel.deleteMany({ paymentId: reversalPayment._id });
-      await PaymentModel.deleteOne({ _id: reversalPayment._id });
+    if (isDuplicateKey(error)) {
+      // A concurrent request with the same idempotency key won the race.
+      const replay = await replayPriorReversal();
+      if (replay) return replay;
     }
-    for (const allocation of restoredAllocations) {
-      await InvoiceModel.updateOne(
-        { _id: allocation.invoiceId, organizationId },
-        { $inc: { outstandingMinor: -allocation.amountMinor } },
-      );
-    }
-    await PaymentModel.updateOne(
-      { _id: original._id, organizationId, reversedAt },
-      { $set: { reversedAt: null } },
-    );
     throw error;
   }
 
@@ -336,84 +455,112 @@ export async function reversePayment(
     actor,
     action: "payment.reversed",
     entityType: "payment",
-    entityId: original._id.toString(),
+    entityId: original.id,
     organizationId,
     reason: input.reason,
-    after: { reversalPaymentId: reversalPayment._id.toString() },
+    after: { reversalPaymentId: reversalPayment.id },
     meta,
   });
 
-  return presentPayment(reversalPayment);
+  return presentPayment(
+    reversalPayment,
+    originalAllocations.map(({ invoiceId, bucket, amountMinor }) => ({ invoiceId, bucket, amountMinor })),
+  );
 }
 
 export async function listPayments(organizationId: string, query: ListQuery) {
-  const filter: QueryFilter = { organizationId };
+  const conditions: SQL[] = [eq(payments.organizationId, organizationId)];
 
-  if (query.customerId) filter.customerId = query.customerId;
-  if (query.kind) filter.kind = query.kind;
+  if (query.customerId) conditions.push(eq(payments.customerId, query.customerId));
+  if (query.kind) conditions.push(eq(payments.kind, query.kind));
   if (query.invoiceId) {
-    filter["allocations.invoiceId"] = query.invoiceId;
+    conditions.push(
+      inArray(
+        payments.id,
+        db
+          .select({ paymentId: paymentAllocations.paymentId })
+          .from(paymentAllocations)
+          .where(
+            and(
+              eq(paymentAllocations.organizationId, organizationId),
+              eq(paymentAllocations.invoiceId, query.invoiceId),
+            ),
+          ),
+      ),
+    );
   }
-  if (query.fromDate || query.toDate) {
-    const dateFilter: Record<string, string> = {};
-    if (query.fromDate) dateFilter.$gte = query.fromDate;
-    if (query.toDate) dateFilter.$lte = query.toDate;
-    filter.paymentDate = dateFilter;
-  }
+  if (query.fromDate) conditions.push(gte(payments.paymentDate, query.fromDate));
+  if (query.toDate) conditions.push(lte(payments.paymentDate, query.toDate));
 
-  const sortOption: Record<string, 1 | -1> = {};
-  if (query.sort.startsWith("-")) {
-    sortOption[query.sort.slice(1)] = -1;
-  } else {
-    sortOption[query.sort] = 1;
-  }
+  const descending = query.sort.startsWith("-");
+  const sortColumn = (descending ? query.sort.slice(1) : query.sort) === "paymentDate"
+    ? payments.paymentDate
+    : payments.createdAt;
 
+  const where = and(...conditions);
   const skip = (query.page - 1) * query.limit;
-  const [items, total] = await Promise.all([
-    PaymentModel.find(filter)
-      .populate("customerId", "displayName companyName")
-      .populate("allocations.invoiceId", "invoiceNumber")
-      .sort(sortOption)
-      .skip(skip)
-      .limit(query.limit),
-    PaymentModel.countDocuments(filter),
+  const [rows, total] = await Promise.all([
+    db
+      .select({
+        payment: payments,
+        customer: { id: customers.id, displayName: customers.displayName, companyName: customers.companyName },
+      })
+      .from(payments)
+      .leftJoin(customers, eq(customers.id, payments.customerId))
+      .where(where)
+      .orderBy(descending ? desc(sortColumn) : asc(sortColumn))
+      .limit(query.limit)
+      .offset(skip),
+    db.$count(payments, where),
   ]);
 
+  const allocations = await loadAllocations(rows.map((row) => row.payment.id), { withInvoiceNumber: true });
+
   return {
-    items: items.map(presentPayment),
+    items: rows.map((row) => presentPayment(row.payment, allocations.get(row.payment.id) ?? [], row.customer)),
     meta: { page: query.page, limit: query.limit, total },
   };
 }
 
 export async function getPayment(organizationId: string, paymentId: string) {
-  const payment = await PaymentModel.findOne({ _id: paymentId, organizationId })
-    .populate("customerId", "displayName companyName email phone")
-    .populate("allocations.invoiceId", "invoiceNumber amountMinor dueDate");
+  const [row] = await db
+    .select({
+      payment: payments,
+      customer: { id: customers.id, displayName: customers.displayName, companyName: customers.companyName },
+    })
+    .from(payments)
+    .leftJoin(customers, eq(customers.id, payments.customerId))
+    .where(and(eq(payments.id, paymentId), eq(payments.organizationId, organizationId)))
+    .limit(1);
 
-  if (!payment) {
+  if (!row) {
     throw new AppError("NOT_FOUND", "Payment not found", 404);
   }
-  return presentPayment(payment);
+  const allocations = await loadAllocations([row.payment.id], { withInvoiceNumber: true });
+  return presentPayment(row.payment, allocations.get(row.payment.id) ?? [], row.customer);
 }
 
 export async function getInvoiceLedger(organizationId: string, invoiceId: string) {
-  const entries = await LedgerEntryModel.find({ organizationId, invoiceId })
-    .populate("recordedBy", "name email")
-    .populate("paymentId", "paymentReference mode")
-    .sort({ createdAt: 1 });
+  const entries = await db
+    .select({
+      entry: ledgerEntries,
+      payment: { id: payments.id, paymentReference: payments.paymentReference },
+      recordedBy: { id: users.id, name: users.name },
+    })
+    .from(ledgerEntries)
+    .leftJoin(payments, eq(payments.id, ledgerEntries.paymentId))
+    .leftJoin(users, eq(users.id, ledgerEntries.recordedBy))
+    .where(and(eq(ledgerEntries.organizationId, organizationId), eq(ledgerEntries.invoiceId, invoiceId)))
+    .orderBy(asc(ledgerEntries.createdAt));
 
-  return entries.map((e: any) => ({
-    id: e._id.toString(),
+  return entries.map(({ entry: e, payment, recordedBy }) => ({
+    id: e.id,
     bucket: e.bucket,
     type: e.type,
     amountMinor: e.amountMinor,
     effectiveDate: e.effectiveDate,
-    payment: e.paymentId
-      ? { id: e.paymentId._id.toString(), reference: e.paymentId.paymentReference }
-      : null,
-    recordedBy: e.recordedBy
-      ? { id: e.recordedBy._id.toString(), name: e.recordedBy.name }
-      : null,
+    payment: payment ? { id: payment.id, reference: payment.paymentReference } : null,
+    recordedBy: recordedBy ? { id: recordedBy.id, name: recordedBy.name } : null,
     createdAt: e.createdAt,
   }));
 }

@@ -1,40 +1,52 @@
-import type { Types } from "mongoose";
-import { ShiftAssignmentModel } from "../workforce/shift-assignment.model.js";
-import { ShiftSwapModel } from "../workforce/shift-swap.model.js";
+import { and, desc, eq, gte, isNull, lte, or } from "drizzle-orm";
+import { db } from "../../database/connection.js";
+import { shiftAssignments, shifts, shiftSwaps } from "../../database/schema.js";
 
+export type EffectiveShift = typeof shifts.$inferSelect;
+
+async function loadShift(organizationId: string, shiftId: string | null): Promise<EffectiveShift | null> {
+  if (!shiftId) return null;
+  const rows = await db.select().from(shifts).where(and(eq(shifts.id, shiftId), eq(shifts.organizationId, organizationId))).limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Returns the shift row (with `id`, no `_id`) effective for a workforce employee on a date, or null.
+ */
 export async function getEffectiveShiftForDate(
-  organizationId: string | Types.ObjectId,
-  employeeProfileId: string | Types.ObjectId,
+  organizationId: string,
+  employeeProfileId: string,
   date: string,
-) {
+): Promise<EffectiveShift | null> {
   // 1. Check for an approved swap on this date
-  const swap: any = await ShiftSwapModel.findOne({
-    organizationId,
-    shiftDate: date,
-    status: "approved",
-    $or: [
-      { requesterEmployeeId: employeeProfileId },
-      { targetEmployeeId: employeeProfileId },
-    ],
-  })
-    .populate("requesterShiftId")
-    .populate("targetShiftId");
+  const [swap] = await db.select().from(shiftSwaps).where(and(
+    eq(shiftSwaps.organizationId, organizationId),
+    eq(shiftSwaps.shiftDate, date),
+    eq(shiftSwaps.status, "approved"),
+    or(eq(shiftSwaps.requesterEmployeeId, employeeProfileId), eq(shiftSwaps.targetEmployeeId, employeeProfileId)),
+  )).limit(1);
 
   if (swap) {
-    if (swap.requesterEmployeeId.toString() === employeeProfileId.toString()) {
-      if (swap.targetShiftId) return swap.targetShiftId;
-    } else if (swap.targetEmployeeId.toString() === employeeProfileId.toString()) {
-      if (swap.requesterShiftId) return swap.requesterShiftId;
+    if (swap.requesterEmployeeId === employeeProfileId) {
+      const shift = await loadShift(organizationId, swap.targetShiftId);
+      if (shift) return shift;
+    } else if (swap.targetEmployeeId === employeeProfileId) {
+      const shift = await loadShift(organizationId, swap.requesterShiftId);
+      if (shift) return shift;
     }
   }
 
   // 2. Regular shift assignment
-  const assignment: any = await ShiftAssignmentModel.findOne({
-    organizationId,
-    employeeId: employeeProfileId,
-    effectiveFrom: { $lte: date },
-    $or: [{ effectiveTo: null }, { effectiveTo: { $gte: date } }],
-  }).populate("shiftId");
+  const [assignment] = await db.select({ shift: shifts }).from(shiftAssignments)
+    .leftJoin(shifts, eq(shifts.id, shiftAssignments.shiftId))
+    .where(and(
+      eq(shiftAssignments.organizationId, organizationId),
+      eq(shiftAssignments.employeeId, employeeProfileId),
+      lte(shiftAssignments.effectiveFrom, date),
+      or(isNull(shiftAssignments.effectiveTo), gte(shiftAssignments.effectiveTo, date)),
+    ))
+    .orderBy(desc(shiftAssignments.effectiveFrom))
+    .limit(1);
 
-  return assignment?.shiftId ?? null;
+  return assignment?.shift ?? null;
 }

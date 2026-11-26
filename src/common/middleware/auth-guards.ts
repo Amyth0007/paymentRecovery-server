@@ -4,7 +4,10 @@ import type { AuthConfig, Role } from "../auth/auth-context.js";
 import type { ActionPermissionKey } from "../../modules/users/permission-registry.js";
 import { readAccessToken } from "../auth/tokens.js";
 import { asyncHandler } from "./async-handler.js";
-import { UserModel } from "../../modules/users/user.model.js";
+import { eq } from "drizzle-orm";
+import { db } from "../../database/connection.js";
+import { users } from "../../database/schema.js";
+import { isUuid } from "../utils/db.js";
 import { effectiveUserAccess } from "../../modules/users/user-access.service.js";
 import { assertTenantAccessible } from "../../modules/organizations/organization.service.js";
 import { recordAudit, requestMeta } from "../../modules/audit-logs/audit.service.js";
@@ -23,18 +26,18 @@ export function createRequireAuth(config: AuthConfig): RequestHandler {
       throw new AppError("UNAUTHORIZED", "Authentication is required", 401);
     }
 
-    const user = await UserModel.findById(claims.sub);
+    const [user] = isUuid(claims.sub) ? await db.select().from(users).where(eq(users.id, claims.sub)).limit(1) : [];
     if (!user || user.status !== "active" || user.tokenVersion !== claims.tokenVersion) {
       throw new AppError("UNAUTHORIZED", "Authentication is required", 401);
     }
 
     req.auth = {
-      userId: user._id.toString(),
-      role: user.role,
-      organizationId: user.organizationId ? user.organizationId.toString() : null,
+      userId: user.id,
+      role: user.role as Role,
+      organizationId: user.organizationId ?? null,
       tokenVersion: user.tokenVersion,
       mustChangePassword: user.mustChangePassword,
-      workforceScope: user.role === "sub_admin" && user.workforceScope ? { mode: user.workforceScope.mode, departmentIds: user.workforceScope.departmentIds.map((id) => id.toString()), locationIds: user.workforceScope.locationIds.map((id) => id.toString()) } : undefined,
+      workforceScope: user.role === "sub_admin" && user.workforceScope ? { mode: user.workforceScope.mode, departmentIds: [...user.workforceScope.departmentIds], locationIds: [...user.workforceScope.locationIds] } : undefined,
     };
     next();
   });

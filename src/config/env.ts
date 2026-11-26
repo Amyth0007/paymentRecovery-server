@@ -7,7 +7,14 @@ function optional<T extends z.ZodType>(schema: T) {
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(4000),
-  MONGODB_URI: z.string().min(1),
+  /** Pooled Postgres URL. On Supabase: the transaction pooler (port 6543). */
+  DATABASE_URL: z.string().min(1),
+  /** Direct/session Postgres URL used for migrations (Supabase port 5432). Optional; falls back to DATABASE_URL. */
+  DIRECT_URL: optional(z.string().min(1)),
+  /** Max pooled connections per API process. Keep (instances x DB_POOL_MAX) under the pooler limit. */
+  DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+  DB_SSL: z.enum(["true", "false"]).optional(),
+  RUN_MIGRATIONS: z.enum(["true", "false"]).default("true"),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),

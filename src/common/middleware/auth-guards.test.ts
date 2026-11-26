@@ -1,20 +1,18 @@
 import type { Request, Response } from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { UserModel } from "../../modules/users/user.model.js";
+import * as userAccess from "../../modules/users/user-access.service.js";
 import { requireActionPermission } from "./auth-guards.js";
 
 const auth = {
-  userId: "000000000000000000000001",
+  userId: "00000000-0000-4000-8000-000000000001",
   role: "sub_admin" as const,
-  organizationId: "000000000000000000000002",
+  organizationId: "00000000-0000-4000-8000-000000000002",
   tokenVersion: 0,
   mustChangePassword: false,
 };
 
 async function runPermission(permission: "customers.archive" | "attendance.adjust", actionPermissions: string[]) {
-  vi.spyOn(UserModel, "findById").mockReturnValue({
-    select: vi.fn().mockResolvedValue({ actionPermissions }),
-  } as never);
+  vi.spyOn(userAccess, "effectiveUserAccess").mockResolvedValue({ modules: [], actions: actionPermissions, customRoleName: null });
 
   const next = vi.fn();
   await new Promise<void>((resolve) => {

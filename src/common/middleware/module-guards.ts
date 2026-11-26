@@ -1,14 +1,20 @@
 import type { RequestHandler } from "express";
 import { AppError } from "../errors/app-error.js";
 import { asyncHandler } from "./async-handler.js";
-import { OrganizationModel } from "../../modules/organizations/organization.model.js";
+import { eq } from "drizzle-orm";
+import { db } from "../../database/connection.js";
+import { organizations } from "../../database/schema.js";
+import { isUuid } from "../utils/db.js";
+import { organizationModules } from "../../modules/organizations/organization.service.js";
 import { effectiveUserAccess } from "../../modules/users/user-access.service.js";
 import type { AuthContext } from "../auth/auth-context.js";
 import { isModuleEnabled, type ModuleKey } from "../../modules/organizations/module-registry.js";
 
 export async function assertModuleEnabled(organizationId: string, moduleKey: ModuleKey): Promise<void> {
-  const organization = await OrganizationModel.findById(organizationId).select("modules");
-  if (!organization || !isModuleEnabled(organization.modules, moduleKey)) {
+  const [organization] = isUuid(organizationId)
+    ? await db.select({ modules: organizations.modules }).from(organizations).where(eq(organizations.id, organizationId)).limit(1)
+    : [];
+  if (!organization || !isModuleEnabled(organizationModules(organization.modules), moduleKey)) {
     throw new AppError("MODULE_DISABLED", "This module is not enabled for your organization", 403);
   }
 }

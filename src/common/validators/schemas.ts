@@ -4,7 +4,8 @@ import { isValidTimeZone } from "../../common/utils/calendar-date.js";
 import { MODULES } from "../../modules/organizations/module-registry.js";
 import { ACTION_PERMISSION_KEYS } from "../../modules/users/permission-registry.js";
 
-export const objectIdSchema = z.string().regex(/^[a-f\d]{24}$/i, "Invalid id");
+/** Record identifiers are PostgreSQL UUIDs (the name is kept from the MongoDB era to avoid churn). */
+export const objectIdSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, "Invalid id");
 
 export const passwordSchema = z.string().min(8).max(128);
 

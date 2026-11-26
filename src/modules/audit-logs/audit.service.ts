@@ -1,8 +1,8 @@
 import type { Request } from "express";
-
-type QueryFilter = Record<string, any>;
+import { and, count, desc, eq, gte, lt, type SQL } from "drizzle-orm";
 import type { AuthContext } from "../../common/auth/auth-context.js";
-import { AuditLogModel } from "./audit-log.model.js";
+import { db, type DbOrTx } from "../../database/connection.js";
+import { auditLogs } from "../../database/schema.js";
 
 export type RequestMeta = {
   ip: string | null;
@@ -21,10 +21,11 @@ export type AuditInput = {
   meta?: RequestMeta;
 };
 
-export async function recordAudit(input: AuditInput): Promise<void> {
+/** `executor` lets callers record the audit entry inside their own transaction. */
+export async function recordAudit(input: AuditInput, executor: DbOrTx = db): Promise<void> {
   const userAgent = input.meta?.userAgent ?? null;
-  await AuditLogModel.create({
-    organizationId: input.organizationId ?? input.actor.organizationId,
+  await executor.insert(auditLogs).values({
+    organizationId: input.organizationId ?? input.actor.organizationId ?? null,
     actorId: input.actor.userId,
     actorRole: input.actor.role,
     action: input.action,
@@ -55,39 +56,38 @@ export async function listAudits(input: {
   page: number;
   limit: number;
 }) {
-  const filter: QueryFilter = {};
+  const conditions: SQL[] = [];
   if (input.actorRole) {
-    filter.actorRole = input.actorRole;
+    conditions.push(eq(auditLogs.actorRole, input.actorRole));
   }
   if (input.organizationId) {
-    filter.organizationId = input.organizationId;
+    conditions.push(eq(auditLogs.organizationId, input.organizationId));
   }
   if (input.entityType) {
-    filter.entityType = input.entityType;
+    conditions.push(eq(auditLogs.entityType, input.entityType));
   }
-  if (input.from || input.to) {
-    const createdAt: { $gte?: Date; $lt?: Date } = {};
-    if (input.from) {
-      createdAt.$gte = new Date(`${input.from}T00:00:00.000Z`);
-    }
-    if (input.to) {
-      createdAt.$lt = new Date(`${input.to}T00:00:00.000Z`);
-      createdAt.$lt.setUTCDate(createdAt.$lt.getUTCDate() + 1);
-    }
-    filter.createdAt = createdAt;
+  if (input.from) {
+    conditions.push(gte(auditLogs.createdAt, new Date(`${input.from}T00:00:00.000Z`)));
   }
+  if (input.to) {
+    const until = new Date(`${input.to}T00:00:00.000Z`);
+    until.setUTCDate(until.getUTCDate() + 1);
+    conditions.push(lt(auditLogs.createdAt, until));
+  }
+  const where = conditions.length ? and(...conditions) : undefined;
 
   const skip = (input.page - 1) * input.limit;
-  const [items, total] = await Promise.all([
-    AuditLogModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(input.limit),
-    AuditLogModel.countDocuments(filter),
+  const [items, [totalRow]] = await Promise.all([
+    db.select().from(auditLogs).where(where).orderBy(desc(auditLogs.createdAt)).limit(input.limit).offset(skip),
+    db.select({ total: count() }).from(auditLogs).where(where),
   ]);
+  const total = totalRow?.total ?? 0;
 
   return {
     items: items.map((entry) => ({
-      id: entry._id.toString(),
-      organizationId: entry.organizationId ? entry.organizationId.toString() : null,
-      actorId: entry.actorId.toString(),
+      id: entry.id,
+      organizationId: entry.organizationId ?? null,
+      actorId: entry.actorId,
       actorRole: entry.actorRole,
       action: entry.action,
       entityType: entry.entityType,

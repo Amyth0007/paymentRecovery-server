@@ -1,11 +1,10 @@
 import ExcelJS from "exceljs";
-import { Types } from "mongoose";
+import { and, eq, inArray } from "drizzle-orm";
 import { AppError } from "../../common/errors/app-error.js";
 import type { AuthContext } from "../../common/auth/auth-context.js";
 import { recordAudit, type RequestMeta } from "../audit-logs/audit.service.js";
-import { DepartmentModel } from "./department.model.js";
-import { DesignationModel } from "./designation.model.js";
-import { WorkforceEmployeeModel } from "./employee.model.js";
+import { db } from "../../database/connection.js";
+import { departments as departmentsTable, designations as designationsTable, workforceEmployees } from "../../database/schema.js";
 import { employeeCreateSchema } from "./workforce.schemas.js";
 
 function cellText(value: ExcelJS.CellValue): string {
@@ -25,11 +24,11 @@ export async function importEmployeesFromWorkbook(actor: AuthContext, organizati
   const required = ["employeenumber", "firstname", "joiningdate", "employmenttype"];
   const missing = required.filter((header) => !headers.has(header));
   if (missing.length) throw new AppError("VALIDATION_ERROR", `Missing required columns: ${missing.join(", ")}`, 422);
-  const departments = await DepartmentModel.find({ organizationId, status: "active" }).select("name");
-  const designations = await DesignationModel.find({ organizationId, status: "active" }).select("name");
-  const departmentByName = new Map(departments.map((item) => [item.name.toLowerCase(), item._id]));
-  const designationByName = new Map(designations.map((item) => [item.name.toLowerCase(), item._id]));
-  const rows: Array<Record<string, unknown>> = [];
+  const departments = await db.select({ id: departmentsTable.id, name: departmentsTable.name }).from(departmentsTable).where(and(eq(departmentsTable.organizationId, organizationId), eq(departmentsTable.status, "active")));
+  const designations = await db.select({ id: designationsTable.id, name: designationsTable.name }).from(designationsTable).where(and(eq(designationsTable.organizationId, organizationId), eq(designationsTable.status, "active")));
+  const departmentByName = new Map(departments.map((item) => [item.name.toLowerCase(), item.id]));
+  const designationByName = new Map(designations.map((item) => [item.name.toLowerCase(), item.id]));
+  const rows: Array<typeof workforceEmployees.$inferInsert> = [];
   const errors: Array<{ row: number; message: string }> = [];
   const seen = new Set<string>();
   for (let rowNumber = 2; rowNumber <= sheet.rowCount; rowNumber++) {
@@ -49,15 +48,21 @@ export async function importEmployeesFromWorkbook(actor: AuthContext, organizati
     else {
       const number = parsed.data.employeeNumber.toUpperCase();
       if (seen.has(number)) errors.push({ row: rowNumber, message: `Duplicate employee number in workbook: ${number}` });
-      seen.add(number); rows.push({ ...parsed.data, organizationId: new Types.ObjectId(organizationId) });
+      seen.add(number);
+      // Former Mongoose setters: uppercase employee number, lowercase email, trim.
+      rows.push({ ...parsed.data, employeeNumber: number.trim(), ...(parsed.data.email !== undefined ? { email: parsed.data.email.trim().toLowerCase() } : {}), organizationId });
     }
   }
   if (errors.length) return { createdCount: 0, errors };
   if (!rows.length) throw new AppError("VALIDATION_ERROR", "No employee data rows were found", 422);
   const employeeNumbers: string[] = rows.map((row) => String(row.employeeNumber));
-  const existing = await WorkforceEmployeeModel.find({ organizationId, employeeNumber: { $in: employeeNumbers } }).select("employeeNumber").lean();
+  const existing = await db.select({ employeeNumber: workforceEmployees.employeeNumber }).from(workforceEmployees).where(and(eq(workforceEmployees.organizationId, organizationId), inArray(workforceEmployees.employeeNumber, employeeNumbers)));
   if (existing.length) throw new AppError("CONFLICT", `Employee numbers already exist: ${existing.map((item) => item.employeeNumber).join(", ")}`, 409);
-  const created = await WorkforceEmployeeModel.insertMany(rows, { ordered: true });
+  const created = await db.transaction(async (tx) => {
+    const inserted: Array<{ id: string }> = [];
+    for (let index = 0; index < rows.length; index += 500) inserted.push(...await tx.insert(workforceEmployees).values(rows.slice(index, index + 500)).returning({ id: workforceEmployees.id }));
+    return inserted;
+  });
   await recordAudit({ actor, action: "workforce.employee_imported", entityType: "workforce_employee_import", entityId: organizationId, organizationId, after: { createdCount: created.length, employeeNumbers }, meta });
   return { createdCount: created.length, errors: [] };
 }

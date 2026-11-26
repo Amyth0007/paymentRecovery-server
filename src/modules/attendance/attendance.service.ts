@@ -380,7 +380,7 @@ function presentRecord(record: {
 
 export async function listAttendanceRecords(actor: AuthContext, organizationId: string, query: RecordQuery) {
   const access = actor.role === "sub_admin" ? await effectiveUserAccess(actor.userId) : null;
-  const isAdmin = actor.role === "org_admin" || actor.role === "accounts_manager" || (actor.role === "sub_admin" && Boolean(access?.actions.includes("attendance.view_all")));
+  const isAdmin = actor.role === "org_admin" || actor.role === "accounts_manager" || (actor.role === "sub_admin" && Boolean(access?.actions.includes("attendance.view_all") || access?.actions.includes("attendance.adjust")));
   const employeeId = isAdmin ? (query.employeeId ?? undefined) : actor.userId;
   const filter: Record<string, unknown> = { organizationId, ...(employeeId ? { employeeId } : {}) };
   if (query.from || query.to) filter.attendanceDate = { ...(query.from ? { $gte: query.from } : {}), ...(query.to ? { $lte: query.to } : {}) };

@@ -85,14 +85,50 @@ export async function listWorkforceEmployees(actor: AuthContext, orgId: string, 
 
 export async function listWorkforceLoginAccounts(actor: AuthContext, orgId: string) {
   const [users, links] = await Promise.all([
-    UserModel.find({ organizationId: orgId, role: "employee", status: "active" }).select("name email").sort({ name: 1 }).lean(),
+    // Any team member login (not only the `employee` role) can be linked to an employee profile.
+    // Linked accounts are always returned, even if disabled, so the edit form can show the current link.
+    WorkforceEmployeeModel.distinct("userId", { organizationId: orgId, userId: { $ne: null } }).then((linkedIds) => {
+      const filter: Record<string, unknown> = { organizationId: orgId, role: { $in: TEAM_MEMBER_ROLES }, $or: [{ status: "active" }, { _id: { $in: linkedIds } }] };
+      return UserModel.find(filter).select("name email role status").sort({ name: 1 }).lean();
+    }),
     WorkforceEmployeeModel.find({ organizationId: orgId, userId: { $ne: null } }).select("_id userId").lean(),
   ]);
   const scope = workforceEmployeeScopeFilter(actor);
   const scopedLinks = Object.keys(scope).length ? await WorkforceEmployeeModel.find({ organizationId: orgId, userId: { $ne: null }, ...scope }).select("_id userId").lean() : links;
   const visibleUserIds = new Set(scopedLinks.map((item) => item.userId!.toString()));
   const linkedEmployeeByUser = new Map(scopedLinks.map((item) => [item.userId!.toString(), item._id.toString()]));
-  return users.filter((user) => !Object.keys(scope).length || visibleUserIds.has(user._id.toString())).map((user) => ({ id: user._id.toString(), name: user.name, email: user.email, linkedEmployeeId: linkedEmployeeByUser.get(user._id.toString()) ?? null }));
+  return users.filter((user) => !Object.keys(scope).length || visibleUserIds.has(user._id.toString())).map((user) => ({ id: user._id.toString(), name: user.name, email: user.email, role: user.role, status: user.status, linkedEmployeeId: linkedEmployeeByUser.get(user._id.toString()) ?? null }));
+}
+
+const TEAM_MEMBER_ROLES = ["org_admin", "sub_admin", "accounts_manager", "field_recovery", "employee", "guard"];
+
+/**
+ * Converts existing team members (organization login accounts) into employee profiles.
+ * Members already linked to a profile, or whose email already belongs to a profile, are skipped.
+ * The login account email becomes the employee email and the account is linked to the new profile.
+ */
+export async function importTeamMembersAsEmployees(actor: AuthContext, orgId: string, meta: RequestMeta) {
+  if (Object.keys(workforceEmployeeScopeFilter(actor)).length) throw new AppError("FORBIDDEN", "Importing all team members requires organization-wide workforce access", 403);
+  const [users, profiles] = await Promise.all([
+    UserModel.find({ organizationId: orgId, status: "active", role: { $in: TEAM_MEMBER_ROLES } } as Record<string, unknown>).select("name email createdAt").sort({ createdAt: 1 }).lean(),
+    WorkforceEmployeeModel.find({ organizationId: orgId }).select("userId email employeeNumber").lean(),
+  ]);
+  const linkedUserIds = new Set(profiles.filter((item) => item.userId).map((item) => item.userId!.toString()));
+  const profileEmails = new Set(profiles.map((item) => (item.email ?? "").toLowerCase()).filter(Boolean));
+  const usedNumbers = new Set(profiles.map((item) => item.employeeNumber.toUpperCase()));
+  let sequence = profiles.length;
+  const nextNumber = () => { let candidate; do { sequence += 1; candidate = `EMP${String(sequence).padStart(4, "0")}`; } while (usedNumbers.has(candidate)); usedNumbers.add(candidate); return candidate; };
+  const toCreate = [];
+  let skipped = 0;
+  for (const member of users) {
+    const email = (member.email ?? "").toLowerCase();
+    if (linkedUserIds.has(member._id.toString()) || (email && profileEmails.has(email))) { skipped++; continue; }
+    const [firstName, ...rest] = (member.name || email.split("@")[0] || "Employee").trim().split(/\s+/);
+    toCreate.push({ organizationId: new Types.ObjectId(orgId), userId: member._id, employeeNumber: nextNumber(), firstName, lastName: rest.join(" "), email, joiningDate: new Date((member as any).createdAt ?? Date.now()).toISOString().slice(0, 10), employmentType: "permanent", status: "active" });
+  }
+  const created = toCreate.length ? await WorkforceEmployeeModel.insertMany(toCreate, { ordered: false }) : [];
+  if (created.length) await recordAudit({ actor, action: "workforce.team_members_imported", entityType: "workforce_employee_import", entityId: orgId, organizationId: orgId, after: { createdCount: created.length, skippedCount: skipped, employeeNumbers: created.map((item) => item.employeeNumber) }, meta });
+  return { createdCount: created.length, skippedCount: skipped };
 }
 
 export async function listPayrollEmployees(actor: AuthContext, orgId: string, query: ListInput) {

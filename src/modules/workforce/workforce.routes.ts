@@ -9,7 +9,7 @@ import { sendSuccess } from "../../common/utils/api-response.js";
 import { objectIdSchema } from "../../common/validators/schemas.js";
 import { requestMeta } from "../audit-logs/audit.service.js";
 import {
-  createWorkforceEmployee, listWorkforceEmployees, listWorkforceLoginAccounts, updateWorkforceEmployee,
+  createWorkforceEmployee, listWorkforceEmployees, listWorkforceLoginAccounts, importTeamMembersAsEmployees, updateWorkforceEmployee,
   listDepartments, saveDepartment, listDesignations, saveDesignation,
   listShifts, createShift, updateShift, deleteShift, assignShift,
   requestShiftSwap, listShiftSwaps, reviewShiftSwap, cancelShiftSwap,
@@ -31,6 +31,7 @@ export function createWorkforceRouter(config: AuthConfig) {
   router.use(createRequireAuth(config), requirePasswordChanged, requireTenant, requireEnabledModule("workforce"), rejectMismatchedOrganization);
   router.get("/employees", requireRole("org_admin", "sub_admin"), requireActionPermission("workforce.view"), asyncHandler(async (req, res) => { const result = await listWorkforceEmployees(req.auth!, req.auth!.organizationId!, workforceListSchema.parse(req.query)); sendSuccess(res, result.items, result.meta); }));
   router.get("/login-accounts", requireRole("org_admin", "sub_admin"), requireActionPermission("workforce.manage_employees"), asyncHandler(async (req, res) => sendSuccess(res, await listWorkforceLoginAccounts(req.auth!, req.auth!.organizationId!))));
+  router.post("/employees/import-team", requireRole("org_admin", "sub_admin"), requireActionPermission("workforce.manage_employees"), asyncHandler(async (req, res) => sendSuccess(res, await importTeamMembersAsEmployees(req.auth!, req.auth!.organizationId!, requestMeta(req)), undefined, 201)));
   router.post("/employees", requireRole("org_admin", "sub_admin"), requireActionPermission("workforce.manage_employees"), asyncHandler(async (req, res) => sendSuccess(res, await createWorkforceEmployee(req.auth!, req.auth!.organizationId!, employeeCreateSchema.parse(req.body), requestMeta(req)), undefined, 201)));
   router.patch("/employees/:id", requireRole("org_admin", "sub_admin"), requireActionPermission("workforce.manage_employees"), asyncHandler(async (req, res) => sendSuccess(res, await updateWorkforceEmployee(req.auth!, req.auth!.organizationId!, objectIdSchema.parse(req.params.id), employeeUpdateSchema.parse(req.body), requestMeta(req)))));
   router.post("/employees/import", requireRole("org_admin", "sub_admin"), requireActionPermission("workforce.manage_employees"), (req, res, next) => uploadWorkbook.single("file")(req, res, (error) => {

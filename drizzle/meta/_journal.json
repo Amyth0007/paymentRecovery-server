@@ -57,6 +57,13 @@
       "when": 1795768652659,
       "tag": "0007_organization_public_code",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795769652659,
+      "tag": "0008_visitor_checkin_photos",
+      "breakpoints": true
     }
   ]
 }

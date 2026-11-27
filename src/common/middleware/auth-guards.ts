@@ -1,6 +1,6 @@
 import type { RequestHandler } from "express";
 import { AppError } from "../errors/app-error.js";
-import type { AuthConfig, Role } from "../auth/auth-context.js";
+import { isTeamMemberRole, usesActionPermissions, type AuthConfig, type Role } from "../auth/auth-context.js";
 import type { ActionPermissionKey } from "../../modules/users/permission-registry.js";
 import { readAccessToken } from "../auth/tokens.js";
 import { asyncHandler } from "./async-handler.js";
@@ -42,6 +42,7 @@ export function createRequireAuth(config: AuthConfig): RequestHandler {
       impersonatorId = impersonator.id;
     }
 
+    const actionScoped = user.role === "sub_admin" || (isTeamMemberRole(user.role) && user.actionPermissionsConfigured);
     req.auth = {
       userId: user.id,
       role: user.role as Role,
@@ -50,7 +51,8 @@ export function createRequireAuth(config: AuthConfig): RequestHandler {
       // A platform admin acting in the organization is never blocked by the admin's pending password change.
       mustChangePassword: impersonatorId ? false : user.mustChangePassword,
       impersonatorId,
-      workforceScope: user.role === "sub_admin" && user.workforceScope ? { mode: user.workforceScope.mode, departmentIds: [...user.workforceScope.departmentIds], locationIds: [...user.workforceScope.locationIds] } : undefined,
+      actionScoped,
+      workforceScope: actionScoped && user.workforceScope ? { mode: user.workforceScope.mode, departmentIds: [...user.workforceScope.departmentIds], locationIds: [...user.workforceScope.locationIds] } : undefined,
     };
     next();
   });
@@ -81,7 +83,10 @@ export const requireTenant: RequestHandler = asyncHandler(async (req, _res, next
 
 export function requireRole(...roles: Role[]): RequestHandler {
   return (req, _res, next) => {
-    if (!req.auth || !roles.includes(req.auth.role)) {
+    // A team member with action-level permissions can use subadmin routes; each of those routes
+    // checks the specific action permission, so the grant – not the role – decides what they can do.
+    const allowedByActionGrant = Boolean(req.auth) && roles.includes("sub_admin") && usesActionPermissions(req.auth!);
+    if (!req.auth || (!roles.includes(req.auth.role) && !allowedByActionGrant)) {
       next(new AppError("FORBIDDEN", "You do not have access to this action", 403));
       return;
     }
@@ -100,7 +105,7 @@ export function requireAnyActionPermission(...permissions: ActionPermissionKey[]
       next();
       return;
     }
-    if (req.auth.role !== "sub_admin") {
+    if (!usesActionPermissions(req.auth)) {
       next();
       return;
     }

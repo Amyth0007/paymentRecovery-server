@@ -1,6 +1,6 @@
 import { Router, type RequestHandler } from "express";
 import multer from "multer";
-import type { AuthConfig } from "../../common/auth/auth-context.js";
+import { usesActionPermissions, type AuthConfig } from "../../common/auth/auth-context.js";
 import { AppError } from "../../common/errors/app-error.js";
 import { asyncHandler } from "../../common/middleware/async-handler.js";
 import {
@@ -92,7 +92,7 @@ export function createFilesRouter(config: AuthConfig) {
       const requiredModule = PURPOSE_MODULE[fileAsset.purpose];
       if (requiredModule) await assertModuleAccess(req.auth!.organizationId!, requiredModule, req.auth);
       if (attendanceFile && fileAsset.uploadedBy?.toString() !== req.auth!.userId && req.auth!.role !== "org_admin") {
-        const access = req.auth!.role === "sub_admin" ? await effectiveUserAccess(req.auth!.userId) : null;
+        const access = usesActionPermissions(req.auth!) ? await effectiveUserAccess(req.auth!.userId) : null;
         const canReviewEvidence = access?.actions.some((permission) => ["attendance.view_all", "attendance.adjust", "attendance.review_corrections"].includes(permission)) ?? false;
         if (!canReviewEvidence) throw new AppError("FORBIDDEN", "Attendance photos are only available to the employee and authorized attendance reviewers", 403);
       }

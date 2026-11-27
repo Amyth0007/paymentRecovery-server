@@ -2,7 +2,7 @@ import { z } from "zod";
 import { TENANT_ROLES } from "../../common/auth/auth-context.js";
 import { isValidTimeZone } from "../../common/utils/calendar-date.js";
 import { MODULES } from "../../modules/organizations/module-registry.js";
-import { ACTION_PERMISSION_KEYS } from "../../modules/users/permission-registry.js";
+import { ACTION_PERMISSION_KEYS, SCREEN_KEYS } from "../../modules/users/permission-registry.js";
 
 /** Record identifiers are PostgreSQL UUIDs (the name is kept from the MongoDB era to avoid churn). */
 export const objectIdSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, "Invalid id");
@@ -53,6 +53,7 @@ export const customRoleInputSchema = z.object({
   description: z.string().trim().max(300).default(""),
   modulePermissions: z.array(moduleKeySchema).min(1).max(30),
   actionPermissions: z.array(z.enum(ACTION_PERMISSION_KEYS)).min(1).max(100),
+  deniedScreens: z.array(z.enum(SCREEN_KEYS)).max(50).default([]),
 }).refine((value) => new Set(value.modulePermissions).size === value.modulePermissions.length && new Set(value.actionPermissions).size === value.actionPermissions.length, { message: "Modules and actions must not contain duplicates" });
 
 export const createPlanSchema = z.object({
@@ -93,9 +94,12 @@ export const createEmployeeSchema = z.object({
   temporaryPassword: passwordSchema,
   modulePermissions: z.array(moduleKeySchema).optional(),
   actionPermissions: z.array(z.enum(ACTION_PERMISSION_KEYS)).optional(),
+  deniedScreens: z.array(z.enum(SCREEN_KEYS)).max(50).optional(),
   customRoleId: objectIdSchema.nullable().optional(),
   workforceScope: workforceScopeSchema.optional(),
-}).refine((value) => !value.workforceScope || value.role === "sub_admin", { message: "Data scopes can only be assigned to subadmins", path: ["workforceScope"] }).refine((value) => !value.customRoleId || (value.role === "sub_admin" && !value.modulePermissions?.length && !value.actionPermissions?.length), { message: "Custom roles can only be assigned to subadmins without separate permission overrides", path: ["customRoleId"] });
+  /** Team members only: "role" keeps role defaults, "actions" enforces action permissions like a subadmin. */
+  permissionMode: z.enum(["role", "actions"]).optional(),
+}).refine((value) => !value.workforceScope || value.role !== "org_admin", { message: "Organization administrators always see the whole organization", path: ["workforceScope"] }).refine((value) => !value.customRoleId || (value.role !== "org_admin" && !value.modulePermissions?.length && !value.actionPermissions?.length && !value.deniedScreens?.length), { message: "Custom roles cannot be combined with separate permission overrides or assigned to organization administrators", path: ["customRoleId"] });
 
 export const updateEmployeeSchema = z
   .object({
@@ -104,13 +108,15 @@ export const updateEmployeeSchema = z
     temporaryPassword: passwordSchema.optional(),
     modulePermissions: z.array(moduleKeySchema).optional(),
     actionPermissions: z.array(z.enum(ACTION_PERMISSION_KEYS)).optional(),
+    deniedScreens: z.array(z.enum(SCREEN_KEYS)).max(50).optional(),
     customRoleId: objectIdSchema.nullable().optional(),
     workforceScope: workforceScopeSchema.optional(),
+    permissionMode: z.enum(["role", "actions"]).optional(),
   })
-  .refine((value) => value.workforceScope === undefined || value.role === undefined || value.role === "sub_admin", { message: "Data scopes can only be assigned to subadmins", path: ["workforceScope"] })
-  .refine((value) => !value.customRoleId || (value.role === undefined || value.role === "sub_admin") , { message: "Custom roles are only available to subadmins", path: ["customRoleId"] })
-  .refine((value) => value.customRoleId === undefined || value.modulePermissions === undefined && value.actionPermissions === undefined, { message: "Custom roles cannot be combined with separate permission overrides", path: ["customRoleId"] })
-  .refine((value) => value.role !== undefined || value.status !== undefined || value.temporaryPassword !== undefined || value.modulePermissions !== undefined || value.actionPermissions !== undefined || value.customRoleId !== undefined || value.workforceScope !== undefined, {
+  .refine((value) => value.workforceScope === undefined || value.role !== "org_admin", { message: "Organization administrators always see the whole organization", path: ["workforceScope"] })
+  .refine((value) => !value.customRoleId || value.role !== "org_admin", { message: "Custom roles cannot be assigned to organization administrators", path: ["customRoleId"] })
+  .refine((value) => value.customRoleId === undefined || value.modulePermissions === undefined && value.actionPermissions === undefined && value.deniedScreens === undefined, { message: "Custom roles cannot be combined with separate permission overrides", path: ["customRoleId"] })
+  .refine((value) => value.role !== undefined || value.status !== undefined || value.temporaryPassword !== undefined || value.modulePermissions !== undefined || value.actionPermissions !== undefined || value.customRoleId !== undefined || value.workforceScope !== undefined || value.deniedScreens !== undefined || value.permissionMode !== undefined, {
     message: "No changes were provided",
   });
 

@@ -9,14 +9,14 @@ import type { z } from "zod";
 import { recordAudit, type RequestMeta } from "../audit-logs/audit.service.js";
 import { isModuleEnabled, type ModuleKey } from "../organizations/module-registry.js";
 import { organizationModules } from "../organizations/organization.service.js";
-import { ACTION_PERMISSIONS } from "./permission-registry.js";
+import { ACTION_PERMISSIONS, cleanDeniedScreens, ScreenPermissionError } from "./permission-registry.js";
 
 type RoleInput = z.infer<typeof customRoleInputSchema>;
 type CustomRoleRow = typeof customRoles.$inferSelect;
-function roleView(role: CustomRoleRow) { return { id: role.id, name: role.name, description: role.description, modulePermissions: role.modulePermissions, actionPermissions: role.actionPermissions, status: role.status, createdAt: role.createdAt, updatedAt: role.updatedAt }; }
+function roleView(role: CustomRoleRow) { return { id: role.id, name: role.name, description: role.description, modulePermissions: role.modulePermissions, actionPermissions: role.actionPermissions, deniedScreens: role.deniedScreens ?? [], status: role.status, createdAt: role.createdAt, updatedAt: role.updatedAt }; }
 
 async function validateRole(organizationId: string, input: RoleInput) {
-  if (input.modulePermissions.includes("settings")) throw new AppError("VALIDATION_ERROR", "Custom subadmin roles cannot manage organization settings or team access", 422);
+  if (input.modulePermissions.includes("settings")) throw new AppError("VALIDATION_ERROR", "Custom roles cannot manage organization settings or team access", 422);
   const [organization] = isUuid(organizationId)
     ? await db.select({ modules: organizations.modules }).from(organizations).where(eq(organizations.id, organizationId)).limit(1)
     : [];
@@ -50,8 +50,11 @@ export async function getAssignableCustomRole(organizationId: string, roleId: st
 
 export async function saveCustomRole(actor: AuthContext, organizationId: string, input: RoleInput, id: string | undefined, meta: RequestMeta) {
   await validateRole(organizationId, input);
+  let deniedScreens: string[];
+  try { deniedScreens = cleanDeniedScreens(input.deniedScreens, input.modulePermissions); }
+  catch (error) { if (error instanceof ScreenPermissionError) throw new AppError("VALIDATION_ERROR", error.message, 422); throw error; }
   const previous = id ? await findActiveRole(organizationId, id) : null;
-  const values = { name: input.name.trim(), description: (input.description ?? "").trim(), modulePermissions: input.modulePermissions, actionPermissions: input.actionPermissions };
+  const values = { name: input.name.trim(), description: (input.description ?? "").trim(), modulePermissions: input.modulePermissions, actionPermissions: input.actionPermissions, deniedScreens };
   let role: CustomRoleRow | null;
   try {
     if (id) {
@@ -74,7 +77,7 @@ export async function saveCustomRole(actor: AuthContext, organizationId: string,
 export async function archiveCustomRole(actor: AuthContext, organizationId: string, id: string, meta: RequestMeta) {
   if (!isUuid(id)) throw new AppError("NOT_FOUND", "Active custom role was not found", 404);
   const inUse = await db.select({ id: users.id }).from(users).where(and(eq(users.organizationId, organizationId), eq(users.customRoleId, id))).limit(1);
-  if (inUse.length > 0) throw new AppError("CONFLICT", "Reassign all subadmins using this role before archiving it", 409);
+  if (inUse.length > 0) throw new AppError("CONFLICT", "Reassign everyone using this role before archiving it", 409);
   const [role] = await db.update(customRoles).set({ status: "archived", updatedBy: actor.userId }).where(activeRoleWhere(organizationId, id)).returning();
   if (!role) throw new AppError("NOT_FOUND", "Active custom role was not found", 404);
   await recordAudit({ actor, action: "user.custom_role_archived", entityType: "custom_role", entityId: id, organizationId, after: { status: role.status, name: role.name }, meta });

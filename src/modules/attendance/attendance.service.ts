@@ -1,4 +1,4 @@
-import type { AuthContext } from "../../common/auth/auth-context.js";
+import { usesActionPermissions, type AuthContext } from "../../common/auth/auth-context.js";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, notInArray, or, type SQL } from "drizzle-orm";
 import { AppError } from "../../common/errors/app-error.js";
 import { isDuplicateKey } from "../../common/utils/db.js";
@@ -445,8 +445,9 @@ function presentRecord(record: AttendanceRecordRow) {
 }
 
 export async function listAttendanceRecords(actor: AuthContext, organizationId: string, query: RecordQuery) {
-  const access = actor.role === "sub_admin" ? await effectiveUserAccess(actor.userId) : null;
-  const isAdmin = actor.role === "org_admin" || actor.role === "accounts_manager" || (actor.role === "sub_admin" && Boolean(access?.actions.includes("attendance.view_all") || access?.actions.includes("attendance.adjust")));
+  const actionScoped = usesActionPermissions(actor);
+  const access = actionScoped ? await effectiveUserAccess(actor.userId) : null;
+  const isAdmin = actor.role === "org_admin" || (!actionScoped && actor.role === "accounts_manager") || (actionScoped && Boolean(access?.actions.includes("attendance.view_all") || access?.actions.includes("attendance.adjust")));
   const employeeId = isAdmin ? (query.employeeId ?? undefined) : actor.userId;
   const hasDateRange = Boolean(query.from || query.to);
   const recordConditions: (SQL | undefined)[] = [

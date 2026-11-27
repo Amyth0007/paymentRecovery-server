@@ -148,6 +148,8 @@ export const customRoles = pgTable("custom_roles", {
   description: text().notNull().default(""),
   modulePermissions: textArray(),
   actionPermissions: textArray(),
+  /** Screens hidden from members of this role even though their module is granted. */
+  deniedScreens: textArray(),
   status: text({ enum: ["active", "archived"] }).notNull().default("active"),
   createdBy: userRef().notNull(),
   updatedBy: userRef().notNull(),
@@ -165,6 +167,14 @@ export const users = pgTable("users", {
   modulePermissions: jsonb().$type<BooleanMap>().notNull().default({}),
   modulePermissionsConfigured: boolean().notNull().default(false),
   actionPermissions: textArray(),
+  /**
+   * Team members (account manager, field executive, employee, guard) normally act by their role's defaults.
+   * When true, their action permissions, custom role and data scope are enforced exactly like a subadmin's.
+   * Subadmins always use action permissions, so the flag is ignored for them.
+   */
+  actionPermissionsConfigured: boolean().notNull().default(false),
+  /** Screens hidden from this user even though their module is granted (deny-list; see SCREENS). */
+  deniedScreens: textArray(),
   customRoleId: uuid().references((): AnyPgColumn => customRoles.id, { onDelete: "set null" }),
   workforceScope: jsonb().$type<WorkforceScope>().notNull().default({ mode: "organization", departmentIds: [], locationIds: [] }),
   status: text({ enum: ["active", "disabled"] }).notNull().default("active"),

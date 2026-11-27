@@ -1,4 +1,4 @@
-import type { AuthContext, TenantRole } from "../../common/auth/auth-context.js";
+import { isTeamMemberRole, type AuthContext, type TenantRole } from "../../common/auth/auth-context.js";
 import { hashPassword } from "../../common/auth/password.js";
 import { AppError } from "../../common/errors/app-error.js";
 import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
@@ -11,7 +11,7 @@ import { recordAudit, type RequestMeta } from "../audit-logs/audit.service.js";
 import { organizationModules } from "../organizations/organization.service.js";
 import { isModuleEnabled, MODULES, type ModuleKey } from "../organizations/module-registry.js";
 import { revokeAllRefreshTokens } from "../auth/refresh-token.service.js";
-import { ACTION_PERMISSIONS, type ActionPermissionKey } from "./permission-registry.js";
+import { ACTION_PERMISSIONS, cleanDeniedScreens, ScreenPermissionError, type ActionPermissionKey } from "./permission-registry.js";
 import { effectiveUserAccess } from "./user-access.service.js";
 import { getAssignableCustomRole } from "./custom-role.service.js";
 
@@ -29,8 +29,19 @@ const userSorts = {
 } as const;
 
 type UserRow = typeof users.$inferSelect;
-type PopulatedCustomRole = { id: string; name: string; modulePermissions: string[]; actionPermissions: string[]; status: string };
+type PopulatedCustomRole = { id: string; name: string; modulePermissions: string[]; actionPermissions: string[]; deniedScreens?: string[] | null; status: string };
+
+/** Converts a screen validation failure into the API's 422 error. */
+function screensFor(deniedScreens: readonly string[] | undefined, grantedModules: readonly string[]) {
+  try { return cleanDeniedScreens(deniedScreens, grantedModules); }
+  catch (error) { if (error instanceof ScreenPermissionError) throw new AppError("VALIDATION_ERROR", error.message, 422); throw error; }
+}
 const DEFAULT_WORKFORCE_SCOPE: WorkforceScope = { mode: "organization", departmentIds: [], locationIds: [] };
+
+/** Subadmins always, and team members once switched to action-level permissions, are governed like a subadmin. */
+function usesActionMode(role: string, actionPermissionsConfigured: boolean | undefined) {
+  return role === "sub_admin" || (isTeamMemberRole(role) && actionPermissionsConfigured === true);
+}
 
 async function findOrganizationModules(organizationId: string): Promise<Map<string, boolean> | undefined> {
   if (!isUuid(organizationId)) return undefined;
@@ -62,6 +73,8 @@ export function presentUser(
     modulePermissions?: BooleanMap | null;
     modulePermissionsConfigured?: boolean;
     actionPermissions?: string[];
+    actionPermissionsConfigured?: boolean;
+    deniedScreens?: string[];
     workforceScope?: WorkforceScope | null;
     customRoleId?: string | null;
   },
@@ -82,6 +95,10 @@ export function presentUser(
     modulePermissions: populatedCustomRole ? Object.fromEntries(roleModulePermissions.map((module) => [module, true])) : user.modulePermissions ?? {},
     modulePermissionsConfigured: populatedCustomRole ? true : user.modulePermissionsConfigured ?? false,
     actionPermissions: populatedCustomRole ? roleActionPermissions : user.actionPermissions ?? [],
+    /** "actions": module and action grants are enforced (subadmin model). "role": the role's defaults apply. */
+    permissionMode: usesActionMode(user.role, user.actionPermissionsConfigured) ? "actions" as const : "role" as const,
+    actionPermissionsConfigured: usesActionMode(user.role, user.actionPermissionsConfigured),
+    deniedScreens: populatedCustomRole ? (populatedCustomRole.status === "active" ? populatedCustomRole.deniedScreens ?? [] : []) : user.deniedScreens ?? [],
     customRoleId,
     customRoleName: populatedCustomRole?.name ?? null,
     workforceScope: user.workforceScope ? { mode: user.workforceScope.mode, departmentIds: [...user.workforceScope.departmentIds], locationIds: [...user.workforceScope.locationIds] } : { mode: "organization", departmentIds: [], locationIds: [] },
@@ -99,7 +116,7 @@ export async function presentSessionUser(userId: string) {
   const effectiveAccess = user.customRoleId ? await effectiveUserAccess(userId) : null;
   return {
     ...presentUser(user),
-    ...(effectiveAccess ? { modulePermissions: Object.fromEntries(effectiveAccess.modules.map((module) => [module, true])), modulePermissionsConfigured: true, actionPermissions: effectiveAccess.actions, customRoleName: effectiveAccess.customRoleName } : {}),
+    ...(effectiveAccess ? { modulePermissions: Object.fromEntries(effectiveAccess.modules.map((module) => [module, true])), modulePermissionsConfigured: true, actionPermissions: effectiveAccess.actions, deniedScreens: effectiveAccess.deniedScreens, customRoleName: effectiveAccess.customRoleName } : {}),
     organization: organization
       ? {
           id: organization.id,
@@ -126,16 +143,21 @@ export async function createEmployee(
 ) {
   try {
     const organizationModuleMap = await findOrganizationModules(organizationId);
-    const customRole = input.customRoleId ? await getAssignableCustomRole(organizationId, input.customRoleId) : null;
+    const teamMember = isTeamMemberRole(input.role);
+    if (input.permissionMode !== undefined && !teamMember && !(input.role === "sub_admin" && input.permissionMode === "actions")) throw new AppError("VALIDATION_ERROR", "Permission mode can only be chosen for team members", 422);
+    if (input.permissionMode === "role" && (input.customRoleId || input.actionPermissions?.length || input.workforceScope)) throw new AppError("VALIDATION_ERROR", "Role defaults cannot be combined with action permissions, a custom role or a data scope", 422);
+    const actionMode = input.role === "sub_admin" || (teamMember && (input.permissionMode === "actions" || (input.permissionMode === undefined && Boolean(input.customRoleId || input.actionPermissions?.length || input.workforceScope))));
+    const customRole = actionMode && input.customRoleId ? await getAssignableCustomRole(organizationId, input.customRoleId) : null;
     const modulePermissions = customRole?.modulePermissions ?? input.modulePermissions ?? [];
     const actionPermissions = customRole?.actionPermissions ?? input.actionPermissions ?? [];
-    if (input.role === "sub_admin" && modulePermissions.includes("settings")) throw new AppError("VALIDATION_ERROR", "Subadmins cannot be granted organization settings or team administration", 422);
-    if (input.role !== "sub_admin" && input.actionPermissions?.length) throw new AppError("VALIDATION_ERROR", "Action permissions are only configurable for subadmins", 422);
+    if (actionMode && modulePermissions.includes("settings")) throw new AppError("VALIDATION_ERROR", "Only organization administrators can manage organization settings and team access", 422);
+    if (!actionMode && input.actionPermissions?.length) throw new AppError("VALIDATION_ERROR", "Action permissions need action-level permission mode", 422);
     if (!customRole && input.actionPermissions?.some((key) => !modulePermissions.includes(ACTION_PERMISSIONS.find((permission) => permission.key === key)?.module as ModuleKey))) throw new AppError("VALIDATION_ERROR", "Action permissions require access to their parent module", 422);
     if (input.role !== "org_admin" && modulePermissions.some((key) => !isModuleEnabled(organizationModuleMap, key as ModuleKey))) throw new AppError("VALIDATION_ERROR", "Staff can only be granted screens enabled for this organization", 422);
     if (input.workforceScope?.mode === "selected") {
       await assertScopeBelongsToOrganization(organizationId, input.workforceScope);
     }
+    const deniedScreens = input.role === "org_admin" ? [] : customRole ? customRole.deniedScreens ?? [] : screensFor(input.deniedScreens, modulePermissions);
     const passwordHash = await hashPassword(input.temporaryPassword);
     const [user] = await db.insert(users).values({
       organizationId,
@@ -145,9 +167,11 @@ export async function createEmployee(
       role: input.role,
       modulePermissions: input.role !== "org_admin" ? Object.fromEntries(modulePermissions.map((key) => [key, true])) : {},
       modulePermissionsConfigured: input.role !== "org_admin" && (input.modulePermissions !== undefined || Boolean(customRole)),
-      actionPermissions: input.role === "sub_admin" ? actionPermissions : [],
+      actionPermissions: actionMode ? actionPermissions : [],
+      actionPermissionsConfigured: teamMember && actionMode,
+      deniedScreens,
       customRoleId: customRole?.id ?? null,
-      workforceScope: input.role === "sub_admin" ? input.workforceScope ?? DEFAULT_WORKFORCE_SCOPE : DEFAULT_WORKFORCE_SCOPE,
+      workforceScope: actionMode ? input.workforceScope ?? DEFAULT_WORKFORCE_SCOPE : DEFAULT_WORKFORCE_SCOPE,
       status: "active",
       mustChangePassword: false,
       tokenVersion: 0,
@@ -159,7 +183,7 @@ export async function createEmployee(
       entityType: "user",
       entityId: user.id,
       organizationId,
-      after: { email: user.email, role: user.role, customRoleId: customRole?.id ?? null, customRoleName: customRole?.name ?? null, modulePermissions: user.modulePermissions ?? {}, actionPermissions: user.actionPermissions ?? [] },
+      after: { email: user.email, role: user.role, permissionMode: actionMode ? "actions" : "role", customRoleId: customRole?.id ?? null, customRoleName: customRole?.name ?? null, modulePermissions: user.modulePermissions ?? {}, actionPermissions: user.actionPermissions ?? [] },
       meta,
     });
     return { ...presentUser(user), customRoleName: customRole?.name ?? null };
@@ -178,7 +202,7 @@ export async function listEmployees(organizationId: string, query: ListQuery) {
     db
       .select({
         user: users,
-        role: { id: customRoles.id, name: customRoles.name, modulePermissions: customRoles.modulePermissions, actionPermissions: customRoles.actionPermissions, status: customRoles.status },
+        role: { id: customRoles.id, name: customRoles.name, modulePermissions: customRoles.modulePermissions, actionPermissions: customRoles.actionPermissions, deniedScreens: customRoles.deniedScreens, status: customRoles.status },
       })
       .from(users)
       .leftJoin(customRoles, eq(customRoles.id, users.customRoleId))
@@ -221,19 +245,20 @@ export async function updateEmployee(
     }
   }
 
-  const before = { role: user.role, status: user.status, workforceScope: user.workforceScope, customRoleId: user.customRoleId ?? null, modulePermissions: user.modulePermissions ?? {}, modulePermissionsConfigured: user.modulePermissionsConfigured, actionPermissions: user.actionPermissions ?? [] };
-  if (input.workforceScope !== undefined) {
-    if (nextRole !== "sub_admin") throw new AppError("VALIDATION_ERROR", "Data scopes can only be assigned to subadmins", 422);
-    if (input.workforceScope.mode === "selected") {
-      await assertScopeBelongsToOrganization(organizationId, input.workforceScope);
+  const before = { role: user.role, status: user.status, workforceScope: user.workforceScope, customRoleId: user.customRoleId ?? null, modulePermissions: user.modulePermissions ?? {}, modulePermissionsConfigured: user.modulePermissionsConfigured, actionPermissions: user.actionPermissions ?? [], actionPermissionsConfigured: user.actionPermissionsConfigured, deniedScreens: user.deniedScreens ?? [] };
+  if (input.role && input.role !== user.role) {
+    // A new role starts from its defaults; permissions sent in the same request are applied below.
+    // Moving between subadmin and organization admin is the only change that keeps action grants.
+    if (input.role !== "sub_admin") {
+      user.actionPermissions = [];
+      user.customRoleId = null;
+      user.workforceScope = DEFAULT_WORKFORCE_SCOPE;
     }
-    user.workforceScope = { mode: input.workforceScope.mode, departmentIds: [...input.workforceScope.departmentIds], locationIds: [...input.workforceScope.locationIds] };
+    user.actionPermissionsConfigured = false;
   }
   if (input.role) {
     user.role = input.role;
-    // Non-subadmins have no data scope; the column keeps its organization-wide default.
-    if (input.role !== "sub_admin") user.workforceScope = DEFAULT_WORKFORCE_SCOPE;
-    else if (!user.workforceScope) user.workforceScope = DEFAULT_WORKFORCE_SCOPE;
+    if (!user.workforceScope) user.workforceScope = DEFAULT_WORKFORCE_SCOPE;
   }
   if (input.status) {
     user.status = input.status;
@@ -241,31 +266,61 @@ export async function updateEmployee(
   if (input.role && input.role === "org_admin") {
     user.modulePermissions = {};
     user.modulePermissionsConfigured = false;
+    user.deniedScreens = [];
+    user.actionPermissions = [];
+    user.customRoleId = null;
+    user.workforceScope = DEFAULT_WORKFORCE_SCOPE;
   }
-  if (input.role === "sub_admin") {
+
+  const teamMember = isTeamMemberRole(user.role);
+  if (input.permissionMode !== undefined) {
+    if (user.role === "org_admin") throw new AppError("VALIDATION_ERROR", "Organization administrators have full access", 422);
+    if (user.role === "sub_admin" && input.permissionMode === "role") throw new AppError("VALIDATION_ERROR", "Subadmins always use action-level permissions", 422);
+    if (input.permissionMode === "role" && (input.customRoleId || input.actionPermissions !== undefined || input.workforceScope !== undefined)) throw new AppError("VALIDATION_ERROR", "Role defaults cannot be combined with action permissions, a custom role or a data scope", 422);
+    if (teamMember) {
+      user.actionPermissionsConfigured = input.permissionMode === "actions";
+      if (input.permissionMode === "role") {
+        user.actionPermissions = [];
+        user.customRoleId = null;
+        user.workforceScope = DEFAULT_WORKFORCE_SCOPE;
+      }
+    }
+  } else if (teamMember && (input.actionPermissions !== undefined || input.customRoleId || input.workforceScope !== undefined)) {
+    // Granting actions, a custom role or a data scope switches a team member to action-level permissions.
+    user.actionPermissionsConfigured = true;
+  }
+  const actionMode = usesActionMode(user.role, user.actionPermissionsConfigured);
+  if (actionMode) {
+    // Only organization administrators manage workspace settings and team access.
     const { settings: _settings, ...rest } = user.modulePermissions ?? {};
     user.modulePermissions = rest;
   }
-  if (input.role && input.role !== "sub_admin") user.actionPermissions = [];
-  if (input.role && input.role !== "sub_admin") user.customRoleId = null;
+  if (input.workforceScope !== undefined) {
+    if (!actionMode) throw new AppError("VALIDATION_ERROR", "Data scopes need action-level permissions", 422);
+    if (input.workforceScope.mode === "selected") {
+      await assertScopeBelongsToOrganization(organizationId, input.workforceScope);
+    }
+    user.workforceScope = { mode: input.workforceScope.mode, departmentIds: [...input.workforceScope.departmentIds], locationIds: [...input.workforceScope.locationIds] };
+  }
   let customRoleName: string | null = null;
   if (input.customRoleId !== undefined) {
     if (input.customRoleId === null) user.customRoleId = null;
     else {
-      if (user.role !== "sub_admin") throw new AppError("VALIDATION_ERROR", "Custom roles can only be assigned to subadmins", 422);
+      if (!actionMode) throw new AppError("VALIDATION_ERROR", "Custom roles need action-level permissions", 422);
       const role = await getAssignableCustomRole(organizationId, input.customRoleId);
       user.customRoleId = role.id;
       user.modulePermissions = Object.fromEntries(role.modulePermissions.map((key) => [key, true]));
       user.modulePermissionsConfigured = true;
       user.actionPermissions = role.actionPermissions as ActionPermissionKey[];
+      user.deniedScreens = role.deniedScreens ?? [];
       customRoleName = role.name;
     }
   }
-  if (input.modulePermissions !== undefined || input.actionPermissions !== undefined) user.customRoleId = null;
+  if (input.modulePermissions !== undefined || input.actionPermissions !== undefined || input.deniedScreens !== undefined) user.customRoleId = null;
   if (input.modulePermissions !== undefined) {
     const organizationModuleMap = await findOrganizationModules(organizationId);
     if (user.role === "org_admin") throw new AppError("VALIDATION_ERROR", "Organization administrators have full module access", 422);
-    if (user.role === "sub_admin" && input.modulePermissions.includes("settings")) throw new AppError("VALIDATION_ERROR", "Subadmins cannot be granted organization settings or team administration", 422);
+    if (actionMode && input.modulePermissions.includes("settings")) throw new AppError("VALIDATION_ERROR", "Only organization administrators can manage organization settings and team access", 422);
     if (input.modulePermissions.some((key) => !isModuleEnabled(organizationModuleMap, key))) throw new AppError("VALIDATION_ERROR", "Staff can only be granted screens enabled for this organization", 422);
     user.modulePermissions = Object.fromEntries(input.modulePermissions.map((key) => [key, true]));
     user.modulePermissionsConfigured = true;
@@ -273,10 +328,16 @@ export async function updateEmployee(
     user.actionPermissions = (user.actionPermissions ?? []).filter((key) => grantedModules.has(ACTION_PERMISSIONS.find((permission) => permission.key === key)?.module ?? ""));
   }
   if (input.actionPermissions !== undefined) {
-    if (user.role !== "sub_admin") throw new AppError("VALIDATION_ERROR", "Action permissions are only configurable for subadmins", 422);
+    if (!actionMode) throw new AppError("VALIDATION_ERROR", "Action permissions need action-level permission mode", 422);
     const grantedModules = new Set<string>(input.modulePermissions ?? Object.keys(user.modulePermissions ?? {}));
     if (input.actionPermissions.some((key) => !grantedModules.has(ACTION_PERMISSIONS.find((permission) => permission.key === key)!.module))) throw new AppError("VALIDATION_ERROR", "Action permissions require access to their parent module", 422);
     user.actionPermissions = input.actionPermissions as ActionPermissionKey[];
+  }
+  if (input.deniedScreens !== undefined && user.role === "org_admin") throw new AppError("VALIDATION_ERROR", "Organization administrators can open every screen", 422);
+  if (input.deniedScreens !== undefined || input.modulePermissions !== undefined) {
+    // Re-validate against the final module grant: hidden screens of revoked modules are dropped.
+    const grantedModules = Object.entries(user.modulePermissions ?? {}).filter(([, on]) => on).map(([key]) => key);
+    user.deniedScreens = screensFor(input.deniedScreens ?? user.deniedScreens ?? [], grantedModules);
   }
   if (input.temporaryPassword) {
     user.passwordHash = await hashPassword(input.temporaryPassword);
@@ -298,6 +359,8 @@ export async function updateEmployee(
       modulePermissions: user.modulePermissions,
       modulePermissionsConfigured: user.modulePermissionsConfigured,
       actionPermissions: user.actionPermissions,
+      actionPermissionsConfigured: user.actionPermissionsConfigured,
+      deniedScreens: user.deniedScreens,
       customRoleId: user.customRoleId,
       passwordHash: user.passwordHash,
       mustChangePassword: user.mustChangePassword,
@@ -312,7 +375,7 @@ export async function updateEmployee(
       entityId: user.id,
       organizationId,
       before,
-      after: { role: user.role, status: user.status, customRoleId: user.customRoleId ?? null, customRoleName: customRoleName ?? accessRole?.name ?? null, modulePermissions: user.modulePermissions ?? {}, modulePermissionsConfigured: user.modulePermissionsConfigured, actionPermissions: user.actionPermissions ?? [], passwordReset: Boolean(input.temporaryPassword) },
+      after: { role: user.role, status: user.status, customRoleId: user.customRoleId ?? null, customRoleName: customRoleName ?? accessRole?.name ?? null, modulePermissions: user.modulePermissions ?? {}, modulePermissionsConfigured: user.modulePermissionsConfigured, actionPermissions: user.actionPermissions ?? [], actionPermissionsConfigured: user.actionPermissionsConfigured, deniedScreens: user.deniedScreens ?? [], passwordReset: Boolean(input.temporaryPassword) },
       meta,
     });
   } catch (error) {

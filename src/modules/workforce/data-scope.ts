@@ -1,13 +1,13 @@
 import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
-import type { AuthContext } from "../../common/auth/auth-context.js";
+import { usesActionPermissions, type AuthContext } from "../../common/auth/auth-context.js";
 import { AppError } from "../../common/errors/app-error.js";
 import { db } from "../../database/connection.js";
 import { workforceEmployees } from "../../database/schema.js";
 
-/** True when the actor is a sub-admin with a "selected" workforce scope (i.e. not organization-wide). */
+/** True when the actor uses action-level permissions (subadmin or configured team member) with a "selected" workforce scope (i.e. not organization-wide). */
 export function isWorkforceScopeRestricted(actor: AuthContext): boolean {
   const scope = actor.workforceScope;
-  return actor.role === "sub_admin" && Boolean(scope) && scope!.mode !== "organization";
+  return usesActionPermissions(actor) && Boolean(scope) && scope!.mode !== "organization";
 }
 
 /**
@@ -44,8 +44,8 @@ export async function assertWorkforceEmployeeAccessible(organizationId: string, 
 
 export function assertWorkforceAssignmentWithinScope(actor: AuthContext, departmentId?: string | null, locationId?: string | null) {
   const scope = actor.workforceScope;
-  if (actor.role !== "sub_admin" || !scope || scope.mode === "organization") return;
+  if (!usesActionPermissions(actor) || !scope || scope.mode === "organization") return;
   if (scope.departmentIds.length && (!departmentId || !scope.departmentIds.includes(departmentId))) throw new AppError("FORBIDDEN", "The employee must belong to one of your assigned departments", 403);
   if (scope.locationIds.length && (!locationId || !scope.locationIds.includes(locationId))) throw new AppError("FORBIDDEN", "The employee must belong to one of your assigned work locations", 403);
-  if (!scope.departmentIds.length && !scope.locationIds.length) throw new AppError("FORBIDDEN", "This subadmin has no assigned workforce scope", 403);
+  if (!scope.departmentIds.length && !scope.locationIds.length) throw new AppError("FORBIDDEN", "No workforce scope is assigned to your account", 403);
 }

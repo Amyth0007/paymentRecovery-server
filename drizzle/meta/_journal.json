@@ -64,6 +64,20 @@
       "when": 1795769652659,
       "tag": "0008_visitor_checkin_photos",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795770652659,
+      "tag": "0009_denied_screens",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795771652659,
+      "tag": "0010_team_action_permissions",
+      "breakpoints": true
     }
   ]
 }

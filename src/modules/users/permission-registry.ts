@@ -63,3 +63,56 @@ export const ACTION_PERMISSIONS = [
 
 export type ActionPermissionKey = (typeof ACTION_PERMISSIONS)[number]["key"];
 export const ACTION_PERMISSION_KEYS = ACTION_PERMISSIONS.map((permission) => permission.key) as [ActionPermissionKey, ...ActionPermissionKey[]];
+
+/**
+ * Individual screens (menu pages) inside each module. Admins can hide screens a person does not need even
+ * though the module is granted. Stored as a deny-list (`deniedScreens`) so access granted before screens
+ * existed is unchanged. Screen visibility is enforced by the client router and menu; data access is still
+ * governed by module and action permissions on the API.
+ */
+export const SCREENS = [
+  { key: "reports.overview", module: "reports", name: "Overview dashboard" },
+  { key: "reports.workforce", module: "reports", name: "Workforce reports" },
+  { key: "customers.list", module: "customers", name: "Customers" },
+  { key: "invoices.list", module: "invoices", name: "Invoices" },
+  { key: "payments.list", module: "payments", name: "Payments" },
+  { key: "recovery.list", module: "recovery", name: "Recovery assignments" },
+  { key: "commitments.list", module: "commitments", name: "Commitments" },
+  { key: "attendance.main", module: "attendance", name: "Attendance" },
+  { key: "attendance.guard_station", module: "attendance", name: "Guard station punches" },
+  { key: "workforce.employees", module: "workforce", name: "Employees" },
+  { key: "workforce.shifts", module: "workforce", name: "Shifts & schedules" },
+  { key: "payroll.earnings", module: "payroll", name: "Earnings & pay" },
+  { key: "payroll.history", module: "payroll", name: "Payroll history" },
+  { key: "overtime.main", module: "overtime", name: "Overtime" },
+  { key: "leave.main", module: "leave", name: "Leave & approvals" },
+  { key: "compliance.main", module: "compliance", name: "Compliance rules" },
+  { key: "visitors.forms", module: "visitors", name: "Forms & passes" },
+  { key: "visitors.register", module: "visitors", name: "Register a visitor" },
+  { key: "visitors.checkin", module: "visitors", name: "Check in / out" },
+  { key: "visitors.records", module: "visitors", name: "Registrations" },
+  { key: "settings.main", module: "settings", name: "Settings & team" },
+] as const;
+
+export type ScreenKey = (typeof SCREENS)[number]["key"];
+export const SCREEN_KEYS = SCREENS.map((screen) => screen.key) as [ScreenKey, ...ScreenKey[]];
+
+/**
+ * Keeps only known screens whose module is granted, and rejects hiding every screen of a granted module
+ * (that would grant a module nobody can open – revoke the module instead).
+ */
+export function cleanDeniedScreens(deniedScreens: readonly string[] | undefined, grantedModules: readonly string[]): ScreenKey[] {
+  const granted = new Set(grantedModules);
+  const denied = [...new Set(deniedScreens ?? [])].filter((key): key is ScreenKey => SCREENS.some((screen) => screen.key === key && granted.has(screen.module)));
+  for (const module of granted) {
+    const moduleScreens = SCREENS.filter((screen) => screen.module === module);
+    if (moduleScreens.length && moduleScreens.every((screen) => denied.includes(screen.key))) {
+      throw new ScreenPermissionError(module);
+    }
+  }
+  return denied;
+}
+
+export class ScreenPermissionError extends Error {
+  constructor(readonly module: string) { super(`Keep at least one ${module} screen visible, or remove the ${module} module instead`); }
+}

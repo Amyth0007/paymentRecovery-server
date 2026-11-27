@@ -7,7 +7,7 @@ import { organizations } from "../../database/schema.js";
 import { isUuid } from "../utils/db.js";
 import { organizationModules } from "../../modules/organizations/organization.service.js";
 import { effectiveUserAccess } from "../../modules/users/user-access.service.js";
-import type { AuthContext } from "../auth/auth-context.js";
+import { usesActionPermissions, type AuthContext } from "../auth/auth-context.js";
 import { isModuleEnabled, type ModuleKey } from "../../modules/organizations/module-registry.js";
 
 export async function assertModuleEnabled(organizationId: string, moduleKey: ModuleKey): Promise<void> {
@@ -29,7 +29,7 @@ export async function assertModuleAccess(organizationId: string, moduleKey: Modu
     if (!access?.modules.includes(moduleKey)) {
       throw new AppError("MODULE_DISABLED", "Your administrator has not granted access to this screen", 403);
     }
-    if (actor.role === "sub_admin" && !access.actions.some((permission) => permission.startsWith(`${moduleKey}.`))) {
+    if (usesActionPermissions(actor) && !access.actions.some((permission) => permission.startsWith(`${moduleKey}.`))) {
       throw new AppError("FORBIDDEN", "Your administrator has not granted access to this module's actions", 403);
     }
   }

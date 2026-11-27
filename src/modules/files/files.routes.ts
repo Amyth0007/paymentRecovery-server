@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import multer from "multer";
 import type { AuthConfig } from "../../common/auth/auth-context.js";
 import { AppError } from "../../common/errors/app-error.js";
@@ -11,7 +11,7 @@ import {
 } from "../../common/middleware/auth-guards.js";
 import { sendSuccess } from "../../common/utils/api-response.js";
 import { requestMeta } from "../audit-logs/audit.service.js";
-import { isAllowedImageMimeType, MAX_FILE_SIZE_BYTES, uploadParamsSchema } from "./files.schemas.js";
+import { MAX_FILE_SIZE_BYTES, resolveImageMimeType, uploadParamsSchema } from "./files.schemas.js";
 import { getFileAsset, saveUploadedFile } from "./files.service.js";
 import { assertModuleAccess } from "../../common/middleware/module-guards.js";
 import type { ModuleKey } from "../organizations/module-registry.js";
@@ -35,13 +35,24 @@ const upload = multer({
     fileSize: MAX_FILE_SIZE_BYTES,
   },
   fileFilter: (_req, file, cb) => {
-    if (isAllowedImageMimeType(file.mimetype)) {
+    const imageMimeType = resolveImageMimeType(file.mimetype, file.originalname);
+    if (imageMimeType) {
+      file.mimetype = imageMimeType;
       cb(null, true);
     } else {
       cb(new AppError("VALIDATION_ERROR", "Only image files are accepted; PDF and other documents are not supported", 400));
     }
   },
 });
+
+const uploadSingleImage: RequestHandler = (req, res, next) => {
+  upload.single("file")(req, res, (error: unknown) => {
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      return next(new AppError("VALIDATION_ERROR", `Image must be ${Math.round(MAX_FILE_SIZE_BYTES / (1024 * 1024))} MB or smaller`, 413));
+    }
+    next(error);
+  });
+};
 
 export function createFilesRouter(config: AuthConfig) {
   const router = Router();
@@ -51,7 +62,7 @@ export function createFilesRouter(config: AuthConfig) {
 
   router.post(
     "/upload",
-    upload.single("file"),
+    uploadSingleImage,
     asyncHandler(async (req, res) => {
       if (!req.file) {
         throw new AppError("VALIDATION_ERROR", "A file is required", 400);

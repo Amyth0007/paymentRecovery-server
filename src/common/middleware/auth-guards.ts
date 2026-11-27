@@ -31,12 +31,25 @@ export function createRequireAuth(config: AuthConfig): RequestHandler {
       throw new AppError("UNAUTHORIZED", "Authentication is required", 401);
     }
 
+    let impersonatorId: string | undefined;
+    if (claims.impersonatorId) {
+      const [impersonator] = isUuid(claims.impersonatorId)
+        ? await db.select({ id: users.id, role: users.role, status: users.status, tokenVersion: users.tokenVersion }).from(users).where(eq(users.id, claims.impersonatorId)).limit(1)
+        : [];
+      if (!impersonator || impersonator.role !== "super_admin" || impersonator.status !== "active" || impersonator.tokenVersion !== claims.impersonatorTokenVersion) {
+        throw new AppError("UNAUTHORIZED", "Authentication is required", 401);
+      }
+      impersonatorId = impersonator.id;
+    }
+
     req.auth = {
       userId: user.id,
       role: user.role as Role,
       organizationId: user.organizationId ?? null,
       tokenVersion: user.tokenVersion,
-      mustChangePassword: user.mustChangePassword,
+      // A platform admin acting in the organization is never blocked by the admin's pending password change.
+      mustChangePassword: impersonatorId ? false : user.mustChangePassword,
+      impersonatorId,
       workforceScope: user.role === "sub_admin" && user.workforceScope ? { mode: user.workforceScope.mode, departmentIds: [...user.workforceScope.departmentIds], locationIds: [...user.workforceScope.locationIds] } : undefined,
     };
     next();

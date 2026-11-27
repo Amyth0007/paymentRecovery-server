@@ -194,3 +194,70 @@ export async function getCustomerOutstandingReport(organizationId: string) {
   // The aggregation used to return raw documents, which carried `_id` alongside the projected `id`.
   return rows.map((row) => ({ _id: row.id, ...row }));
 }
+
+/** Month key (YYYY-MM) for `monthsBack` months before the current UTC month. */
+function monthKey(monthsBack: number) {
+  const now = new Date();
+  const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - monthsBack, 1));
+  return date.toISOString().slice(0, 7);
+}
+
+/** Six-month invoiced vs collected trend plus recovery and commitment pipelines for the overview screen. */
+export async function getOverviewInsights(organizationId: string) {
+  const months = Array.from({ length: 6 }, (_, index) => monthKey(5 - index));
+  const fromDate = `${months[0]}-01`;
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const [invoiceMonths, paymentMonths, recoveryStatuses, commitmentStatuses, draftCount] = await Promise.all([
+    db
+      .select({
+        month: sql<string>`substr(${invoices.invoiceDate}, 1, 7)`,
+        invoicedMinor: sumOf(sql`${invoices.amountMinor}`),
+        count: sql<number>`count(*)`.mapWith(Number),
+      })
+      .from(invoices)
+      .where(and(eq(invoices.organizationId, organizationId), eq(invoices.documentStatus, "issued"), sql`${invoices.invoiceDate} >= ${fromDate}`))
+      .groupBy(sql`substr(${invoices.invoiceDate}, 1, 7)`),
+    db
+      .select({
+        month: sql<string>`substr(${payments.paymentDate}, 1, 7)`,
+        collectedMinor: sumOf(sql`case when ${payments.kind} = 'collection' then ${payments.amountMinor} else -${payments.amountMinor} end`),
+        count: sql<number>`count(*) filter (where ${payments.kind} = 'collection')`.mapWith(Number),
+      })
+      .from(payments)
+      .where(and(eq(payments.organizationId, organizationId), sql`${payments.paymentDate} >= ${fromDate}`))
+      .groupBy(sql`substr(${payments.paymentDate}, 1, 7)`),
+    db
+      .select({ status: recoveryAssignments.status, count: sql<number>`count(*)`.mapWith(Number) })
+      .from(recoveryAssignments)
+      .where(eq(recoveryAssignments.organizationId, organizationId))
+      .groupBy(recoveryAssignments.status),
+    db
+      .select({
+        status: commitments.status,
+        count: sql<number>`count(*)`.mapWith(Number),
+        amountMinor: sumOf(sql`${commitments.promisedAmountMinor}`),
+        overdueCount: sql<number>`count(*) filter (where ${commitments.promisedDate} < ${todayStr})`.mapWith(Number),
+      })
+      .from(commitments)
+      .where(eq(commitments.organizationId, organizationId))
+      .groupBy(commitments.status),
+    db.$count(invoices, and(eq(invoices.organizationId, organizationId), eq(invoices.documentStatus, "draft"))),
+  ]);
+
+  const invoicedByMonth = new Map(invoiceMonths.map((row) => [row.month, row]));
+  const collectedByMonth = new Map(paymentMonths.map((row) => [row.month, row]));
+
+  return {
+    monthly: months.map((month) => ({
+      month,
+      invoicedMinor: invoicedByMonth.get(month)?.invoicedMinor ?? 0,
+      invoiceCount: invoicedByMonth.get(month)?.count ?? 0,
+      collectedMinor: collectedByMonth.get(month)?.collectedMinor ?? 0,
+      paymentCount: collectedByMonth.get(month)?.count ?? 0,
+    })),
+    recoveryByStatus: Object.fromEntries(recoveryStatuses.map((row) => [row.status, row.count])),
+    commitmentsByStatus: Object.fromEntries(commitmentStatuses.map((row) => [row.status, { count: row.count, amountMinor: row.amountMinor, overdueCount: row.overdueCount }])),
+    draftInvoices: draftCount,
+  };
+}

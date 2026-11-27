@@ -28,6 +28,8 @@ export type AuthContext = {
   tokenVersion: number;
   mustChangePassword: boolean;
   workforceScope?: { mode: "organization" | "selected"; departmentIds: string[]; locationIds: string[] };
+  /** Platform super admin acting inside this organization (see platform impersonation). */
+  impersonatorId?: string;
 };
 
 export type AuthConfig = {

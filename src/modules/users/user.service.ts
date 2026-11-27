@@ -112,6 +112,7 @@ export async function presentSessionUser(userId: string) {
           showGuides: organization.showGuides ?? true,
           currency: organization.currency,
           modules: Object.fromEntries(Object.keys(MODULES).map((key) => [key, isModuleEnabled(organizationModules(organization.modules), key as ModuleKey)])),
+          navOrder: Array.isArray(organization.settings?.navOrder) ? organization.settings.navOrder : [],
         }
       : null,
   };

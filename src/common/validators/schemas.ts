@@ -24,6 +24,7 @@ export const settingsSchema = z.object({
   commitmentGraceDays: z.number().int().min(0).max(365).optional(),
   fieldLocationCapture: z.enum(["off", "optional"]).optional(),
   autoFollowUpOnMissedCommitment: z.boolean().optional(),
+  navOrder: z.array(z.string().trim().min(1).max(80).regex(/^[a-z0-9/_-]+$/i)).max(80).refine((keys) => new Set(keys).size === keys.length, { message: "Menu order must not contain duplicates" }).optional(),
 });
 
 export const createOrganizationSchema = z.object({

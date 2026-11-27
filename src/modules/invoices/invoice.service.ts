@@ -10,6 +10,7 @@ import {
   invoiceAcknowledgements,
   invoices,
   ledgerEntries,
+  recoveryAssignments,
   users,
 } from "../../database/schema.js";
 import { recordAudit, type RequestMeta } from "../audit-logs/audit.service.js";
@@ -499,6 +500,15 @@ export async function listInvoices(organizationId: string, query: ListQuery) {
   if (query.outstandingOnly === "true") {
     documentStatus = "issued";
     outstandingPositive = true;
+  }
+
+  if (query.excludeActiveRecovery === "true") {
+    conditions.push(sql`not exists (
+      select 1 from ${recoveryAssignments}
+      where ${recoveryAssignments.organizationId} = ${organizationId}
+        and ${recoveryAssignments.status} not in ('closed', 'fully_recovered')
+        and ${invoices.id} = any(${recoveryAssignments.invoiceIds})
+    )`);
   }
 
   if (documentStatus) conditions.push(eq(invoices.documentStatus, documentStatus));

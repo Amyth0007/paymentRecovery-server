@@ -15,6 +15,7 @@ import {
   getAgingBuckets,
   getCustomerOutstandingReport,
   getDashboardMetrics,
+  getOverviewInsights,
 } from "./reports.service.js";
 
 export function createReportsRouter(config: AuthConfig) {
@@ -28,6 +29,14 @@ export function createReportsRouter(config: AuthConfig) {
     requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("reports.view"),
     asyncHandler(async (req, res) => {
       sendSuccess(res, await getDashboardMetrics(req.auth!.organizationId!));
+    }),
+  );
+
+  router.get(
+    "/overview",
+    requireRole("org_admin", "sub_admin", "accounts_manager", "employee"), requireActionPermission("reports.view"),
+    asyncHandler(async (req, res) => {
+      sendSuccess(res, await getOverviewInsights(req.auth!.organizationId!));
     }),
   );
 

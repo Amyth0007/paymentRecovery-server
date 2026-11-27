@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, gte, inArray, lte, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, lte, notInArray, sql, type SQL } from "drizzle-orm";
 import type { z } from "zod";
 import type { AuthContext } from "../../common/auth/auth-context.js";
 import { AppError } from "../../common/errors/app-error.js";
@@ -210,6 +210,25 @@ export async function createAssignment(
     throw new AppError(
       "INVALID_STATE",
       "One or more invoices do not exist, do not belong to customer, or have no outstanding balance",
+      422,
+    );
+  }
+
+  const [alreadyAssigned] = await db
+    .select({ id: recoveryAssignments.id })
+    .from(recoveryAssignments)
+    .where(
+      and(
+        eq(recoveryAssignments.organizationId, organizationId),
+        notInArray(recoveryAssignments.status, ["closed", "fully_recovered"]),
+        sql`${recoveryAssignments.invoiceIds} && ${sql.raw("ARRAY[")}${sql.join(input.invoiceIds.map((invoiceId) => sql`${invoiceId}`), sql`, `)}${sql.raw("]::uuid[]")}`,
+      ),
+    )
+    .limit(1);
+  if (alreadyAssigned) {
+    throw new AppError(
+      "INVALID_STATE",
+      "One or more selected invoices are already part of an open recovery assignment",
       422,
     );
   }

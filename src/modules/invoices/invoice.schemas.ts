@@ -67,6 +67,8 @@ export const invoiceListQuerySchema = z.object({
   overdueOnly: z.enum(["true", "false"]).optional(),
   dueTodayOnly: z.enum(["true", "false"]).optional(),
   outstandingOnly: z.enum(["true", "false"]).optional(),
+  /** Hide invoices already linked to an open (not closed / fully recovered) recovery assignment. */
+  excludeActiveRecovery: z.enum(["true", "false"]).optional(),
   sort: z
     .enum([
       "dueDate",

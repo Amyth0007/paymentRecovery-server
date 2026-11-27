@@ -7,6 +7,9 @@ export type AccessClaims = {
   role: Role;
   organizationId: string | null;
   tokenVersion: number;
+  /** Set when a platform super admin is acting inside an organization. */
+  impersonatorId?: string;
+  impersonatorTokenVersion?: number;
 };
 
 export function signAccessToken(
@@ -21,6 +24,25 @@ export function signAccessToken(
     },
     config.accessSecret,
     { subject: claims.sub, expiresIn: config.accessTtlSeconds },
+  );
+}
+
+/** Short-lived token that lets a super admin act as an organization's admin without touching their own session. */
+export function signImpersonationToken(
+  claims: AccessClaims & { impersonatorId: string; impersonatorTokenVersion: number },
+  config: AuthConfig,
+  ttlSeconds: number,
+): string {
+  return jwt.sign(
+    {
+      role: claims.role,
+      organizationId: claims.organizationId,
+      tokenVersion: claims.tokenVersion,
+      imp: claims.impersonatorId,
+      impTv: claims.impersonatorTokenVersion,
+    },
+    config.accessSecret,
+    { subject: claims.sub, expiresIn: ttlSeconds },
   );
 }
 
@@ -42,11 +64,15 @@ function parseClaims(decoded: JwtPayload): AccessClaims {
   if (organizationId !== null && typeof organizationId !== "string") {
     throw new Error("Access token organization is invalid");
   }
+  const impersonation = typeof decoded.imp === "string" && typeof decoded.impTv === "number"
+    ? { impersonatorId: decoded.imp, impersonatorTokenVersion: decoded.impTv }
+    : {};
   return {
     sub: decoded.sub,
     role,
     organizationId,
     tokenVersion,
+    ...impersonation,
   };
 }
 

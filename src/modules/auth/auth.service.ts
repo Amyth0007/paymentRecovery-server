@@ -1,6 +1,7 @@
 import type { AuthConfig, AuthContext, Role } from "../../common/auth/auth-context.js";
 import { AppError } from "../../common/errors/app-error.js";
-import type { loginSchema } from "../../common/validators/schemas.js";
+import type { changePasswordSchema, loginSchema } from "../../common/validators/schemas.js";
+import { recordAudit, type RequestMeta } from "../audit-logs/audit.service.js";
 import type { z } from "zod";
 import { assertTenantAccessible } from "../organizations/organization.service.js";
 import { presentSessionUser } from "../users/user.service.js";
@@ -72,7 +73,34 @@ export async function logout(rawToken: string | undefined) {
 }
 
 export async function getMe(actor: AuthContext) {
-  return presentSessionUser(actor.userId);
+  const profile = await presentSessionUser(actor.userId);
+  if (!actor.impersonatorId) return profile;
+  const [platformAdmin] = await db.select({ id: users.id, name: users.name, email: users.email }).from(users).where(eq(users.id, actor.impersonatorId)).limit(1);
+  return { ...profile, mustChangePassword: false, impersonatedBy: platformAdmin ?? { id: actor.impersonatorId, name: "Platform admin", email: "" } };
+}
+
+type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+
+/** Signed-in user changes their own password. Other sessions are signed out; this one receives fresh tokens. */
+export async function changeOwnPassword(actor: AuthContext, input: ChangePasswordInput, config: AuthConfig, meta: RequestMeta) {
+  if (actor.impersonatorId) {
+    throw new AppError("FORBIDDEN", "Platform admins cannot change an organization user's password from inside the organization", 403);
+  }
+  const [user] = await db.select().from(users).where(eq(users.id, actor.userId)).limit(1);
+  if (!user || !(await passwordMatches(user.passwordHash, input.currentPassword))) {
+    throw new AppError("VALIDATION_ERROR", "Your current password is incorrect", 422);
+  }
+  if (input.currentPassword === input.newPassword) {
+    throw new AppError("VALIDATION_ERROR", "Choose a new password that is different from the current one", 422);
+  }
+  const nextTokenVersion = user.tokenVersion + 1;
+  await db
+    .update(users)
+    .set({ passwordHash: await hashNewPassword(input.newPassword), mustChangePassword: false, tokenVersion: nextTokenVersion })
+    .where(eq(users.id, user.id));
+  await revokeAllRefreshTokens(user.id);
+  await recordAudit({ actor, action: "user.password_changed", entityType: "user", entityId: user.id, meta }).catch(() => undefined);
+  return sessionFor({ ...user, tokenVersion: nextTokenVersion }, config);
 }
 
 export async function ensureSuperAdmin(input: {

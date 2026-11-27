@@ -50,6 +50,8 @@ export type OrganizationSettings = {
   commitmentGraceDays: number;
   fieldLocationCapture: "off" | "optional";
   autoFollowUpOnMissedCommitment: boolean;
+  /** Admin-chosen sidebar order: nav group ids and screen paths, highest priority first. */
+  navOrder?: string[];
 };
 export const DEFAULT_ORGANIZATION_SETTINGS: OrganizationSettings = {
   acknowledgementEvidenceRequired: false,

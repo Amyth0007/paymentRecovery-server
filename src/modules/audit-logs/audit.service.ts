@@ -26,14 +26,15 @@ export async function recordAudit(input: AuditInput, executor: DbOrTx = db): Pro
   const userAgent = input.meta?.userAgent ?? null;
   await executor.insert(auditLogs).values({
     organizationId: input.organizationId ?? input.actor.organizationId ?? null,
-    actorId: input.actor.userId,
-    actorRole: input.actor.role,
+    // Actions taken while a platform admin is inside an organization are attributed to that platform admin.
+    actorId: input.actor.impersonatorId ?? input.actor.userId,
+    actorRole: input.actor.impersonatorId ? "super_admin" : input.actor.role,
     action: input.action,
     entityType: input.entityType,
     entityId: input.entityId,
     before: input.before ?? null,
     after: input.after ?? null,
-    reason: input.reason ?? null,
+    reason: input.reason ?? (input.actor.impersonatorId ? `Platform admin acting as organization admin ${input.actor.userId}` : null),
     ip: input.meta?.ip ?? null,
     userAgent: userAgent ? userAgent.slice(0, 300) : null,
   });

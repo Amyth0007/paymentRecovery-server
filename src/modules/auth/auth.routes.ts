@@ -3,10 +3,11 @@ import rateLimit from "express-rate-limit";
 import { Router } from "express";
 import type { AuthConfig } from "../../common/auth/auth-context.js";
 import { sendError, sendSuccess } from "../../common/utils/api-response.js";
-import { loginSchema } from "../../common/validators/schemas.js";
+import { changePasswordSchema, loginSchema } from "../../common/validators/schemas.js";
+import { requestMeta } from "../audit-logs/audit.service.js";
 import { asyncHandler } from "../../common/middleware/async-handler.js";
 import { createRequireAuth } from "../../common/middleware/auth-guards.js";
-import { getMe, login, logout, refresh } from "./auth.service.js";
+import { changeOwnPassword, getMe, login, logout, refresh } from "./auth.service.js";
 
 export const REFRESH_COOKIE = "refresh_token";
 
@@ -81,6 +82,18 @@ export function createAuthRouter(config: AuthConfig) {
     requireAuth,
     asyncHandler(async (req, res) => {
       sendSuccess(res, await getMe(req.auth!));
+    }),
+  );
+
+  router.post(
+    "/change-password",
+    requireAuth,
+    limitLogin,
+    asyncHandler(async (req, res) => {
+      const body = changePasswordSchema.parse(req.body);
+      const session = await changeOwnPassword(req.auth!, body, config, requestMeta(req));
+      setRefreshCookie(res, session.refreshToken, config);
+      sendSuccess(res, { accessToken: session.accessToken, user: session.user });
     }),
   );
 

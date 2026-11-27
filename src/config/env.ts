@@ -31,6 +31,8 @@ const envSchema = z.object({
   SUPER_ADMIN_EMAIL: optional(z.email()),
   SUPER_ADMIN_PASSWORD: optional(z.string().min(8).max(128)),
   SUPER_ADMIN_NAME: optional(z.string().trim().min(1).max(120)),
+  /** Master password a super admin must enter to open an organization as its admin. Feature is disabled when unset. */
+  MASTER_PASSWORD: optional(z.string().min(12).max(256)),
   CLOUDINARY_CLOUD_NAME: optional(z.string().trim().min(1)),
   CLOUDINARY_API_KEY: optional(z.string().trim().min(1)),
   CLOUDINARY_API_SECRET: optional(z.string().trim().min(1)),

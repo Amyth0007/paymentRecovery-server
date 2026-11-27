@@ -6,6 +6,7 @@ import { isDuplicateKey, isUuid } from "../../common/utils/db.js";
 import { asc, desc, eq } from "drizzle-orm";
 import { db } from "../../database/connection.js";
 import {
+  invoices,
   organizations,
   organizationSubscriptions,
   subscriptionPlans,
@@ -81,12 +82,16 @@ function presentSettings(settings: Partial<OrganizationSettings> | null | undefi
     commitmentGraceDays: settings.commitmentGraceDays ?? 0,
     fieldLocationCapture: settings.fieldLocationCapture ?? "off",
     autoFollowUpOnMissedCommitment: settings.autoFollowUpOnMissedCommitment ?? true,
+    navOrder: Array.isArray(settings.navOrder) ? settings.navOrder : [],
   };
 }
 
 async function usageFor(organizationId: string) {
-  const userCount = await db.$count(users, eq(users.organizationId, organizationId));
-  return { userCount, invoiceCount: 0, storageBytes: 0 };
+  const [userCount, invoiceCount] = await Promise.all([
+    db.$count(users, eq(users.organizationId, organizationId)),
+    db.$count(invoices, eq(invoices.organizationId, organizationId)),
+  ]);
+  return { userCount, invoiceCount, storageBytes: 0 };
 }
 
 async function subscriptionSummary(organizationId: string) {

@@ -105,6 +105,7 @@ export const EMPTY_PAYROLL_TOTALS: PayrollTotals = { employees: 0, grossEarnings
 // =====================================================================
 export const organizations = pgTable("organizations", {
   id: id(),
+  publicCode: text().notNull().unique().default(sql`'Org' || nextval('organization_public_code_seq')::text`),
   name: text().notNull(),
   legalName: text().notNull().default(""),
   address: text().notNull().default(""),
@@ -207,6 +208,7 @@ export const FILE_PURPOSES = [
   "commitment_evidence",
   "attendance_photo",
   "attendance_correction",
+  "visitor_registration",
 ] as const;
 
 export const fileAssets = pgTable("file_assets", {
@@ -219,7 +221,7 @@ export const fileAssets = pgTable("file_assets", {
   storagePath: text().notNull().default(""),
   storageUrl: text(),
   cloudinaryPublicId: text(),
-  uploadedBy: userRef().notNull(),
+  uploadedBy: userRef(),
   createdAt: createdAt(),
 }, (t) => [index().on(t.organizationId, t.purpose)]);
 
@@ -890,3 +892,22 @@ export const complianceRuleSets = pgTable("compliance_rule_sets", {
   uniqueIndex().on(t.organizationId, t.ruleCode, t.jurisdiction, t.regionCode, t.effectiveFrom, t.version),
   index().on(t.organizationId, t.status, t.ruleCode, t.effectiveFrom),
 ]);
+
+// Visitor forms are versioned snapshots. Passes pin a version; submissions retain both
+// the submitted JSON and the exact schema used, so later edits never rewrite history.
+export type VisitorFormField = { key: string; label: string; type: string; placeholder?: string; helpText?: string; required: boolean; enabled: boolean; order: number; defaultValue?: unknown; options?: string[]; minLength?: number; maxLength?: number; validation?: Record<string, unknown>; visibility?: { key: string; operator: "equals" | "not_equals"; value: unknown } };
+export const visitorForms = pgTable("visitor_forms", {
+  id: id(), organizationId: orgRef(), name: text().notNull(), description: text().notNull().default(""), status: text({ enum: ["draft", "published", "archived"] }).notNull().default("draft"), version: integer().notNull().default(1), fields: jsonb().$type<VisitorFormField[]>().notNull().default([]), createdBy: userRef().notNull(), ...timestamps,
+}, (t) => [index().on(t.organizationId, t.status)]);
+export const visitorFormVersions = pgTable("visitor_form_versions", {
+  id: id(), formId: uuid().notNull().references(() => visitorForms.id, { onDelete: "cascade" }), version: integer().notNull(), name: text().notNull(), fields: jsonb().$type<VisitorFormField[]>().notNull(), createdAt: createdAt(),
+}, (t) => [uniqueIndex().on(t.formId, t.version)]);
+export const visitorPasses = pgTable("visitor_passes", {
+  id: id(), organizationId: orgRef(), formId: uuid().notNull().references(() => visitorForms.id), formVersion: integer().notNull(), versionId: uuid().notNull().references(() => visitorFormVersions.id), code: text().notNull().unique(), label: text().notNull(), status: text({ enum: ["active", "disabled"] }).notNull().default("active"), createdBy: userRef().notNull(), createdAt: createdAt(),
+}, (t) => [index().on(t.organizationId, t.formId)]);
+export const visitorRegistrations = pgTable("visitor_registrations", {
+  id: id(), organizationId: orgRef(), passId: uuid().references(() => visitorPasses.id, { onDelete: "set null" }), formId: uuid().notNull().references(() => visitorForms.id), formVersion: integer().notNull(), formSnapshot: jsonb().$type<VisitorFormField[]>().notNull(), values: jsonb().$type<Record<string, unknown>>().notNull(), visitorCode: text().notNull().unique(), photoAssetId: uuid().references(() => fileAssets.id, { onDelete: "set null" }), checkedInAt: ts(), checkedInBy: uuid().references(() => users.id, { onDelete: "set null" }), checkedOutAt: ts(), checkedOutBy: uuid().references(() => users.id, { onDelete: "set null" }), channel: text().notNull().default("public"), createdAt: createdAt(),
+}, (t) => [index().on(t.organizationId, t.createdAt)]);
+export const visitorUploads = pgTable("visitor_uploads", {
+  id: id(), organizationId: orgRef(), passId: uuid().notNull().references(() => visitorPasses.id, { onDelete: "cascade" }), fieldKey: text().notNull(), fileAssetId: uuid().notNull().references(() => fileAssets.id, { onDelete: "cascade" }), createdAt: createdAt(),
+}, (t) => [uniqueIndex().on(t.passId, t.fieldKey, t.fileAssetId), index().on(t.organizationId, t.passId)]);

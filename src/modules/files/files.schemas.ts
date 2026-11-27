@@ -9,6 +9,7 @@ export const FILE_PURPOSES = [
   "commitment_evidence",
   "attendance_photo",
   "attendance_correction",
+  "visitor_registration",
 ] as const;
 
 export const uploadParamsSchema = z.object({

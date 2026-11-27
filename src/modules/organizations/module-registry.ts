@@ -13,6 +13,7 @@ export const MODULES = {
   overtime: { name: "Overtime", description: "Overtime policies, requests, review, and payable hours", defaultEnabled: false },
   leave: { name: "Leave", description: "Leave types, balances, requests, and approvals", defaultEnabled: false },
   compliance: { name: "Compliance rules", description: "Versioned jurisdictional payroll rule configuration", defaultEnabled: false },
+  visitors: { name: "Visitor Management", description: "Visitor forms, registration passes, QR codes, and visitor records", defaultEnabled: false },
 } as const;
 
 export type ModuleKey = keyof typeof MODULES;

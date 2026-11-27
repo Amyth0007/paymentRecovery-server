@@ -110,3 +110,32 @@ export async function getFileAsset(organizationId: string, fileId: string) {
     absolutePath,
   };
 }
+
+/** Stores a pass-scoped public visitor image using the configured Cloudinary backend or local fallback. */
+export async function savePublicVisitorUpload(organizationId: string, file: Express.Multer.File) {
+  const env = loadEnv();
+  let storagePath = "";
+  let storageUrl: string | null = null;
+  let cloudinaryPublicId: string | null = null;
+  if (env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const folder = `paymentRecovery/${organizationId}/visitor_registration`;
+    const signature = createHash("sha1").update(`folder=${folder}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`).digest("hex");
+    const body = new FormData();
+    const bytes = new Uint8Array(file.buffer.byteLength); bytes.set(file.buffer);
+    body.append("file", new Blob([bytes.buffer as ArrayBuffer]), file.originalname);
+    body.append("api_key", env.CLOUDINARY_API_KEY); body.append("timestamp", String(timestamp)); body.append("folder", folder); body.append("signature", signature);
+    const response = await fetch(`https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/auto/upload`, { method: "POST", body });
+    const result = await response.json() as { secure_url?: string; public_id?: string; error?: { message?: string } };
+    if (!response.ok || !result.secure_url || !result.public_id) throw new AppError("UPLOAD_FAILED", result.error?.message || "Cloudinary upload failed", 502);
+    storageUrl = result.secure_url; cloudinaryPublicId = result.public_id;
+  } else {
+    const targetDir = await ensureUploadDir(organizationId, "visitor_registration");
+    const ext = path.extname(file.originalname); const storedName = `${randomUUID()}${ext}`;
+    await fs.writeFile(path.join(targetDir, storedName), file.buffer);
+    storagePath = path.join(organizationId, "visitor_registration", storedName);
+  }
+  const [asset] = await db.insert(fileAssets).values({ organizationId, purpose: "visitor_registration", originalFilename: file.originalname.trim(), mimeType: file.mimetype, sizeBytes: file.size, storagePath, storageUrl, cloudinaryPublicId, uploadedBy: null }).returning();
+  if (!asset) throw new AppError("UPLOAD_FAILED", "Visitor file record could not be created", 500);
+  return { id: asset.id, originalFilename: asset.originalFilename, mimeType: asset.mimeType, sizeBytes: asset.sizeBytes };
+}

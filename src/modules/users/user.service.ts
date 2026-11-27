@@ -103,6 +103,7 @@ export async function presentSessionUser(userId: string) {
     organization: organization
       ? {
           id: organization.id,
+          publicCode: organization.publicCode,
           name: organization.name,
           legalName: organization.legalName,
           address: organization.address,

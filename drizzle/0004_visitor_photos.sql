@@ -1,0 +1,2 @@
+ALTER TABLE "visitor_registrations" ADD COLUMN "photo_asset_id" uuid;--> statement-breakpoint
+ALTER TABLE "visitor_registrations" ADD CONSTRAINT "visitor_registrations_photo_asset_id_file_assets_id_fk" FOREIGN KEY ("photo_asset_id") REFERENCES "public"."file_assets"("id") ON DELETE set null ON UPDATE no action;

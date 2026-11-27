@@ -32,6 +32,7 @@ import { createWorkforceReportsRouter } from "./modules/workforce/workforce-repo
 import { createComplianceRouter } from "./modules/workforce/compliance.routes.js";
 import { createCompliancePlatformRouter } from "./modules/workforce/compliance-platform.routes.js";
 import "./types/express.js";
+import { createVisitorRouter } from "./modules/visitors/visitor.routes.js";
 
 export type AppDependencies = {
   logger: Logger;
@@ -89,6 +90,7 @@ export function createApp(dependencies: AppDependencies) {
   app.use("/api/v1/overtime", createOvertimeRouter(dependencies.authConfig));
   app.use("/api/v1/my-payroll", createSelfPayrollRouter(dependencies.authConfig));
   app.use("/api/v1/leave", createLeaveRouter(dependencies.authConfig));
+  app.use("/api/v1/visitors", createVisitorRouter(dependencies.authConfig));
   app.use("/api/v1/workforce-reports", createWorkforceReportsRouter(dependencies.authConfig));
   app.use("/api/v1/compliance", createComplianceRouter(dependencies.authConfig));
   app.use("/api/v1/platform/compliance", createCompliancePlatformRouter(dependencies.authConfig));

@@ -113,6 +113,7 @@ export async function presentOrganization(organizationId: string) {
   }
   return {
     id: organization.id,
+    publicCode: organization.publicCode,
     name: organization.name,
     legalName: organization.legalName,
     address: organization.address,

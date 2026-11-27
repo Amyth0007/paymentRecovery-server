@@ -54,6 +54,11 @@ export const ACTION_PERMISSIONS = [
   { key: "leave.approve", module: "leave", name: "Approve or reject leave" },
   { key: "compliance.view", module: "compliance", name: "View compliance rule versions" },
   { key: "compliance.manage", module: "compliance", name: "Draft compliance rule versions" },
+  { key: "visitors.view", module: "visitors", name: "View visitor registrations" },
+  { key: "visitors.register", module: "visitors", name: "Register visitors" },
+  { key: "visitors.manage_forms", module: "visitors", name: "Manage forms and registration passes" },
+  { key: "visitors.check_in", module: "visitors", name: "Check visitors in" },
+  { key: "visitors.check_out", module: "visitors", name: "Check visitors out" },
 ] as const;
 
 export type ActionPermissionKey = (typeof ACTION_PERMISSIONS)[number]["key"];

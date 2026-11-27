@@ -26,6 +26,7 @@ const PURPOSE_MODULE: Partial<Record<Purpose, ModuleKey>> = {
   commitment_evidence: "commitments",
   attendance_photo: "attendance",
   attendance_correction: "attendance",
+  visitor_registration: "visitors",
 };
 
 const upload = multer({
@@ -79,7 +80,7 @@ export function createFilesRouter(config: AuthConfig) {
       const attendanceFile = fileAsset.purpose === "attendance_photo" || fileAsset.purpose === "attendance_correction";
       const requiredModule = PURPOSE_MODULE[fileAsset.purpose];
       if (requiredModule) await assertModuleAccess(req.auth!.organizationId!, requiredModule, req.auth);
-      if (attendanceFile && fileAsset.uploadedBy.toString() !== req.auth!.userId && req.auth!.role !== "org_admin") {
+      if (attendanceFile && fileAsset.uploadedBy?.toString() !== req.auth!.userId && req.auth!.role !== "org_admin") {
         const access = req.auth!.role === "sub_admin" ? await effectiveUserAccess(req.auth!.userId) : null;
         const canReviewEvidence = access?.actions.some((permission) => ["attendance.view_all", "attendance.adjust", "attendance.review_corrections"].includes(permission)) ?? false;
         if (!canReviewEvidence) throw new AppError("FORBIDDEN", "Attendance photos are only available to the employee and authorized attendance reviewers", 403);

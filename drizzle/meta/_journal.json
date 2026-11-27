@@ -8,6 +8,55 @@
       "when": 1795698207480,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1795762183733,
+      "tag": "0001_visitor_forms",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795762269059,
+      "tag": "0002_visitor_form_versions",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1795763057349,
+      "tag": "0003_visitor_uploads",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795765893719,
+      "tag": "0004_visitor_photos",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795766652659,
+      "tag": "0005_visitor_qr_checkin",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795767652659,
+      "tag": "0006_visitor_checkin_actors",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795768652659,
+      "tag": "0007_organization_public_code",
+      "breakpoints": true
     }
   ]
 }

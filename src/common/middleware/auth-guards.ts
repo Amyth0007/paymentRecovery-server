@@ -87,7 +87,7 @@ export function requireAnyActionPermission(...permissions: ActionPermissionKey[]
       next();
       return;
     }
-    if (req.auth.role !== "sub_admin" && req.auth.role !== "guard") {
+    if (req.auth.role !== "sub_admin") {
       next();
       return;
     }

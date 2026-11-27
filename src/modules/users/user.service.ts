@@ -129,7 +129,7 @@ export async function createEmployee(
     const modulePermissions = customRole?.modulePermissions ?? input.modulePermissions ?? [];
     const actionPermissions = customRole?.actionPermissions ?? input.actionPermissions ?? [];
     if (input.role === "sub_admin" && modulePermissions.includes("settings")) throw new AppError("VALIDATION_ERROR", "Subadmins cannot be granted organization settings or team administration", 422);
-    if (!["sub_admin", "guard"].includes(input.role) && input.actionPermissions?.length) throw new AppError("VALIDATION_ERROR", "Action permissions are configurable for subadmins and guards", 422);
+    if (input.role !== "sub_admin" && input.actionPermissions?.length) throw new AppError("VALIDATION_ERROR", "Action permissions are only configurable for subadmins", 422);
     if (!customRole && input.actionPermissions?.some((key) => !modulePermissions.includes(ACTION_PERMISSIONS.find((permission) => permission.key === key)?.module as ModuleKey))) throw new AppError("VALIDATION_ERROR", "Action permissions require access to their parent module", 422);
     if (input.role !== "org_admin" && modulePermissions.some((key) => !isModuleEnabled(organizationModuleMap, key as ModuleKey))) throw new AppError("VALIDATION_ERROR", "Staff can only be granted screens enabled for this organization", 422);
     if (input.workforceScope?.mode === "selected") {
@@ -144,7 +144,7 @@ export async function createEmployee(
       role: input.role,
       modulePermissions: input.role !== "org_admin" ? Object.fromEntries(modulePermissions.map((key) => [key, true])) : {},
       modulePermissionsConfigured: input.role !== "org_admin" && (input.modulePermissions !== undefined || Boolean(customRole)),
-      actionPermissions: input.role === "sub_admin" || input.role === "guard" ? actionPermissions : [],
+      actionPermissions: input.role === "sub_admin" ? actionPermissions : [],
       customRoleId: customRole?.id ?? null,
       workforceScope: input.role === "sub_admin" ? input.workforceScope ?? DEFAULT_WORKFORCE_SCOPE : DEFAULT_WORKFORCE_SCOPE,
       status: "active",
@@ -245,7 +245,7 @@ export async function updateEmployee(
     const { settings: _settings, ...rest } = user.modulePermissions ?? {};
     user.modulePermissions = rest;
   }
-  if (input.role && input.role !== "sub_admin" && input.role !== "guard") user.actionPermissions = [];
+  if (input.role && input.role !== "sub_admin") user.actionPermissions = [];
   if (input.role && input.role !== "sub_admin") user.customRoleId = null;
   let customRoleName: string | null = null;
   if (input.customRoleId !== undefined) {
@@ -272,7 +272,7 @@ export async function updateEmployee(
     user.actionPermissions = (user.actionPermissions ?? []).filter((key) => grantedModules.has(ACTION_PERMISSIONS.find((permission) => permission.key === key)?.module ?? ""));
   }
   if (input.actionPermissions !== undefined) {
-    if (user.role !== "sub_admin" && user.role !== "guard") throw new AppError("VALIDATION_ERROR", "Action permissions are configurable for subadmins and guards", 422);
+    if (user.role !== "sub_admin") throw new AppError("VALIDATION_ERROR", "Action permissions are only configurable for subadmins", 422);
     const grantedModules = new Set<string>(input.modulePermissions ?? Object.keys(user.modulePermissions ?? {}));
     if (input.actionPermissions.some((key) => !grantedModules.has(ACTION_PERMISSIONS.find((permission) => permission.key === key)!.module))) throw new AppError("VALIDATION_ERROR", "Action permissions require access to their parent module", 422);
     user.actionPermissions = input.actionPermissions as ActionPermissionKey[];
